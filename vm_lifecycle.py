@@ -102,18 +102,23 @@ rest_opts = {
 def main():
     connection = get_connection(host)
     default_vm = {
-        'name': 'python-vmLifeCycle',
-        'description': 'An example VM created using the rest API',
-        'mem': 4294967296,  # 4GiB
-        'numVCPU': 2,
-        'blockDevs': [{
-            'capacity': 10000000000,  # 10GB
-            'type': 'VIRTIO_DISK',
-            'cacheMode': 'WRITETHROUGH'
-        }],
-        'netDevs': [{
-            'type': 'VIRTIO'
-        }]
+        'dom': {
+            'name': 'python-vmLifeCycle',
+            'description': 'An example VM created using the rest API',
+            'mem': 4294967296,  # 4GiB
+            'numVCPU': 2,
+            'blockDevs': [{
+                'capacity': 10000000000,  # 10GB
+                'type': 'VIRTIO_DISK',
+                'cacheMode': 'WRITETHROUGH'
+            }],
+            'netDevs': [{
+                'type': 'VIRTIO'
+            }]
+        },
+        'options': {
+            #  'attachGuestToolsISO': true
+            }
     }
 
     print("Create VM")
@@ -180,7 +185,7 @@ def main():
 
     print("Update VM properties")
     edit_vm_attrs = {
-        'name': default_vm['name'] + 'Updated',
+        'name': default_vm['dom']['name'] + 'Updated',
         'numVCPU': 4,
         'mem': 8589934592,  # 8GiB
         'tags': ",".join(['burger', 'tastes', 'good'])
