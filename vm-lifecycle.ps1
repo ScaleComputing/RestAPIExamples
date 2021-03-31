@@ -93,23 +93,27 @@ function Wait-ScaleTask {
 
 Write-Host "Create VM"
 $json = @{
-    name = "VMLifeycleTest"
-    description = "An example created for testing the rest API"
-    mem = 4GB
-    numVCPU = 4;
-    blockDevs = @(
-        @{
-            capacity = 1GB
-            type = 'VIRTIO_DISK'
-            cacheMode = 'WRITETHROUGH'
-        }
-    )
-    netDevs = @(
-        @{
-            type = 'VIRTIO'
-        }
-    )
-} | ConvertTo-Json
+	dom = @{
+	    name = "VMLifeycleTest"
+	    description = "An example created for testing the rest API"
+	    mem = 4GB
+	    numVCPU = 4;
+	    blockDevs = @(
+		@{
+		    capacity = 1GB
+		    type = 'VIRTIO_DISK'
+		    cacheMode = 'WRITETHROUGH'
+		}
+	    )
+	    netDevs = @(
+		@{
+		    type = 'VIRTIO'
+		}
+	    )
+	}
+	options = @{
+	}
+} | ConvertTo-Json -Depth 100
 $result = Invoke-RestMethod @restOpts "$url/VirDomain/"  -Method POST -Body $json
 $vmUUID = $($result.createdUUID)
 Wait-ScaleTask -TaskTag $($result.taskTag)
