@@ -112,6 +112,7 @@ $json = @{
 	    )
 	}
 	options = @{
+	    #  attachGuestToolsISO = true
 	}
 } | ConvertTo-Json -Depth 100
 $result = Invoke-RestMethod @restOpts "$url/VirDomain/"  -Method POST -Body $json

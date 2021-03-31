@@ -117,6 +117,7 @@ def main():
             }]
         },
         'options': {
+            #  'attachGuestToolsISO': true
             }
     }
 
