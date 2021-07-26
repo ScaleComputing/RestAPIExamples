@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 
 """
-Purpose: to demonstrate how to login to a cluster via REST API.
+Purpose: to serve as an example on how to query the login endpoint for session
+resuse
 
 Input: URL, cluster username, and password
 
 Returns: sessiondID cookie
 
-Note: 
+Note: Before running, provide the path to your certificate chain or set the
+request argument to verify=False. However, with this setting you maybe subject
+to a man-in-the-middle attack. Please only use for local
+development or testing
 """
 
 import requests
@@ -33,13 +37,13 @@ payload = json.dumps({
   "useOIDC": False
 })
 headers = {
-  'content': 'application/json',
   'Authorization': auth,
   'Content-Type': 'application/json'
 }
 
 #login request
-response = requests.request("POST", url, headers=headers, data=payload, verify='cert-bundle.crt')
+response = requests.request("POST", url, headers=headers, data=payload,
+        verify='/path/to/certfile')
 
 print(response.text)
 
