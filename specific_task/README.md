@@ -11,3 +11,10 @@ Refer to the API docs on a scale system for a detailed guide on available calls.
 Returns the latest replication snapshot that falls outside of a defined age timeframe.
 Includes optional arguments to retrieve additional information about snapshots, schedules,
 and remote cluster connections.
+
+
+### checkAffinity.ps1
+
+Provides the LAN IP addresses and uuid values for each node in the target cluster for quick
+reference. Also provides each VM, the present node location of the VM, and the preferred 
+and backup affinity assignments.
