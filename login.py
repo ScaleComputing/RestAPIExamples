@@ -20,7 +20,7 @@ import base64
 
 #prompt for url and provide example
 print("Please provide the URL..")
-url = input("Example: https://cluster.domain.internal/rest/v1/login \n")
+url = input("Example: https://cluster.domain.internal/ \n")
 
 #prompt for username and password
 username = input("Username: ")
@@ -42,8 +42,22 @@ headers = {
 }
 
 #login request
-response = requests.request("POST", url, headers=headers, data=payload,
-        verify='/path/to/certfile')
+response = requests.request("POST", url + 'rest/v1/login', headers=headers, data=payload,
+        verify=False)
 
-print(response.text)
+print('Response: ', response.text)
+print('Cookies: ', response.cookies)
 
+# Create session object
+s = requests.Session()
+
+#login request but now using session object
+s.request("POST", url + 'rest/v1/login', headers=headers, data=payload, verify=False)
+print('New cookie: ', s.cookies)
+
+# reusing cookie
+s.request("GET", url + 'rest/v1/ping', headers=headers)
+print('Reusing cookie: ', s.cookies)
+
+# log out and destory current session cookie
+s.request("POST", url + 'rest/v1/logout', headers=headers)
