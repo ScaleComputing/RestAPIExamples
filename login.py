@@ -43,16 +43,17 @@ headers = {
 
 #login request
 response = requests.request("POST", url + 'rest/v1/login', headers=headers, data=payload,
-        verify=False)
+        verify='path/to/certfile')
 
 print('Response: ', response.text)
 print('Cookies: ', response.cookies)
 
 # Create session object
 s = requests.Session()
+s.verify = 'path/to/certfile'
 
 #login request but now using session object
-s.request("POST", url + 'rest/v1/login', headers=headers, data=payload, verify=False)
+s.request("POST", url + 'rest/v1/login', headers=headers, data=payload)
 print('New cookie: ', s.cookies)
 
 # reusing cookie
