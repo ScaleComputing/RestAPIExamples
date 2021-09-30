@@ -18,3 +18,9 @@ and remote cluster connections.
 Provides the LAN IP addresses and uuid values for each node in the target cluster for quick
 reference. Also provides each VM, the present node location of the VM, and the preferred 
 and backup affinity assignments.
+
+### SetTag.ps1
+
+Sets the VM tag value using a VM name string with an optional ability to restart the VM.
+Useful for applying any tag, but especially for applying a GPU tag and restarting the VM
+to enable the vGPU.
