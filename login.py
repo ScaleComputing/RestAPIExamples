@@ -47,6 +47,8 @@ response = requests.request("POST", url + 'rest/v1/login', headers=headers, data
 
 print('Response: ', response.text)
 print('Cookies: ', response.cookies)
+#print('Clearing this cookies...')
+#requests.request("POST", url + 'rest/v1/logout', verify='./d12f-01.crt')
 
 # Create session object
 s = requests.Session()
@@ -56,9 +58,9 @@ s.verify = 'path/to/certfile'
 s.request("POST", url + 'rest/v1/login', headers=headers, data=payload)
 print('New cookie: ', s.cookies)
 
-# reusing cookie
-s.request("GET", url + 'rest/v1/ping', headers=headers)
+# reusing cookie without authorization header
+s.request("GET", url + 'rest/v1/ping')
 print('Reusing cookie: ', s.cookies)
 
 # log out and destory current session cookie
-s.request("POST", url + 'rest/v1/logout', headers=headers)
+s.request("POST", url + 'rest/v1/logout')
