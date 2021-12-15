@@ -6,12 +6,14 @@ resuse
 
 Input: URL, cluster username, and password
 
-Returns: sessiondID cookie
+Returns: sessionID cookie
+
+Dependency: Requests library. See: https://docs.python-requests.org/en/latest/user/install/#install
 
 Note: Before running, provide the path to your certificate chain or set the
 request argument to verify=False. However, with this setting you maybe subject
 to a man-in-the-middle attack. Please only use for local
-development or testing
+development or testing.
 """
 
 import requests
@@ -42,25 +44,40 @@ headers = {
 }
 
 #login request
+print('Logging in...')
 response = requests.request("POST", url + 'rest/v1/login', headers=headers, data=payload,
-        verify='path/to/certfile')
-
+        verify='path/to/cert')
 print('Response: ', response.text)
 print('Cookies: ', response.cookies)
-print('Clearing this cookies...')
-requests.request("POST", url + 'rest/v1/logout', verify='path/to/certfile')
+
+#logout request header reusing cookie
+headers_cookie = {
+        'Cookie': 'sessionID={0}'.format(response.cookies.get('sessionID'))
+}
+
+print('Logging out...')
+logout = requests.request("POST", url + 'rest/v1/logout', headers=headers_cookie, verify='path/to/cert')
+print('Status code: ', logout.status_code)
+
+print('Clearing Cookie Jar...\n')
+requests.cookies.RequestsCookieJar.clear(response.cookies)
+requests.cookies.RequestsCookieJar.clear(logout.cookies)
 
 # Create session object
+print('Create Requests session this time...')
 s = requests.Session()
-s.verify = 'path/to/certfile'
+s.verify = 'path/to/cert'
 
 #login request but now using session object
-s.request("POST", url + 'rest/v1/login', headers=headers, data=payload)
-print('New cookie: ', s.cookies)
+r = s.request("POST", url + 'rest/v1/login', headers=headers, data=payload)
+print('Response: ', r.text)
+print('New cookie: ', r.cookies)
 
 # reusing cookie without authorization header
 s.request("GET", url + 'rest/v1/ping')
 print('Reusing cookie: ', s.cookies)
 
 # log out and destory current session cookie
+print('Logging out once more...')
 s.request("POST", url + 'rest/v1/logout')
+
