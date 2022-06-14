@@ -93,27 +93,27 @@ function Wait-ScaleTask {
 
 Write-Host "Create VM"
 $json = @{
-	dom = @{
-	    name = "VMLifeycleTest"
-	    description = "An example created for testing the rest API"
-	    mem = 4GB
-	    numVCPU = 4;
-	    blockDevs = @(
-		@{
-		    capacity = 1GB
-		    type = 'VIRTIO_DISK'
-		    cacheMode = 'WRITETHROUGH'
-		}
-	    )
-	    netDevs = @(
-		@{
-		    type = 'VIRTIO'
-		}
-	    )
-	}
-	options = @{
-	    #  attachGuestToolsISO = true
-	}
+    dom = @{
+        name = "VMLifeycleTest"
+        description = "An example created for testing the rest API"
+        mem = 4GB
+        numVCPU = 4;
+        blockDevs = @(
+            @{
+                capacity = 1GB
+                type = "VIRTIO_DISK"
+                cacheMode = "WRITETHROUGH"
+            }
+        )
+        netDevs = @(
+            @{
+                type = "VIRTIO"
+            }
+        )
+    }
+    options = @{
+        #  attachGuestToolsISO = true
+    }
 } | ConvertTo-Json -Depth 100
 $result = Invoke-RestMethod @restOpts "$url/VirDomain/"  -Method POST -Body $json
 $vmUUID = $($result.createdUUID)
@@ -181,13 +181,55 @@ $json = @{
 $result = Invoke-RestMethod @restOpts "$url/VirDomain/$vmUUID" -Method PATCH  -Body $json
 Wait-ScaleTask -TaskTag $($result.taskTag)
 
+# The following (available in v9.1) is an example cloud-init customization that would be recognized
+# on first boot by a cloud-image VM configured to run cloud-init. (Note: the VM
+# cloned in this example script is not a cloud-image configured to run cloud-init)
+# More example cloud-config and documentation can be found here:
+# https://cloudinit.readthedocs.io/en/latest/topics/examples.html
+#
+# yaml for cloud-init meta-data
+$metaData = @"
+dsmode: local
+local-hostname:"VMLifeycleTest"
+"@
 
+# yaml for cloud-init user-data
+$userData = @'
+#cloud-config
+#apt_update: true
+#apt_upgrade: true
+password: my_secret_password
+chpasswd: { expire: false }
+ssh_pwauth: true
+#ssh_authorized_keys:
+#  - ssh-rsa my_secret_ssh_key
+apt: {sources: {docker.list: {source: 'deb [arch=amd64] https://download.docker.com/linux/ubuntu $RELEASE stable', keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88}}}
+packages: [qemu-guest-agent, docker-ce, docker-ce-cli]
+bootcmd:
+  - [ sh, -c, 'sudo echo GRUB_CMDLINE_LINUX="nomodeset" >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo echo GRUB_GFXPAYLOAD_LINUX="1024x768" >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo echo GRUB_DISABLE_LINUX_UUID=true >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo update-grub' ]
+runcmd:
+  - [docker, pull, hello-world]
+  - [docker, run, hello-world]
+  - [docker, images, hello-world]
+'@
 
-Write-Host "Clone VM"
+# base64 encode the cloud-init data
+$metaData64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($metaData))
+$userData64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($userData))
+$cloudInitData64 = @{
+    userData = $userData64
+    metaData = $metaData64
+}
+
+Write-Host "Clone VM with example cloud-init customization payload"
 $json = @{
     template = @{
-        name = "VMLifecycle-Clone";
-        description = "An example VM cloned using the rest API"
+        name = "VMLifecycle-Clone-CloudInit"
+        description = "An example VM cloned using the rest API with cloud-init data"
+        cloudInitData = $cloudInitData64
     }
 } | ConvertTo-Json
 

@@ -117,8 +117,8 @@ def main():
             }]
         },
         'options': {
-            #  'attachGuestToolsISO': true
-            }
+            #  attachGuestToolsISO = true
+        }
     }
 
     print("Create VM")
@@ -195,11 +195,55 @@ def main():
     result = get_response(connection)
     wait_for_task_completion(connection, result['taskTag'])
 
+    # The following (available in v9.1) is an example cloud-init customization that would be recognized
+    # on first boot by a cloud-image VM configured to run cloud-init. (Note: the VM
+    # cloned in this example script is not a cloud-image configured to run cloud-init)
+    # More example cloud-config and documentation can be found here:
+    # https://cloudinit.readthedocs.io/en/latest/topics/examples.html
+    #
+    # yaml for cloud-init meta-data
+    metaData = '''
+dsmode: local
+local-hostname:"VMLifeycleTest"
+'''
+
+    # yaml for cloud-init user-data
+    userData = '''
+#cloud-config
+#apt_update: true
+#apt_upgrade: true
+password: my_secret_password
+chpasswd: { expire: false }
+ssh_pwauth: true
+#ssh_authorized_keys:
+#  - ssh-rsa my_secret_ssh_key
+apt: {sources: {docker.list: {source: 'deb [arch=amd64] https://download.docker.com/linux/ubuntu $RELEASE stable', keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88}}}
+packages: [qemu-guest-agent, docker-ce, docker-ce-cli]
+bootcmd:
+  - [ sh, -c, 'sudo echo GRUB_CMDLINE_LINUX="nomodeset" >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo echo GRUB_GFXPAYLOAD_LINUX="1024x768" >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo echo GRUB_DISABLE_LINUX_UUID=true >> /etc/default/grub' ]
+  - [ sh, -c, 'sudo update-grub' ]
+runcmd:
+  - [docker, pull, hello-world]
+  - [docker, run, hello-world]
+  - [docker, images, hello-world]
+'''
+
+    # base64 encode the cloud-init data
+    metaData64 = str(base64.b64encode(bytes(metaData, 'utf-8')), 'utf-8')
+    userData64 = str(base64.b64encode(bytes(userData, 'utf-8')), 'utf-8')
+    cloudInitData64 = {
+        'userData' : userData64,
+        'metaData' : metaData64
+    }
+
     print("Clone VM")
     vm_clone_attrs = {
         'template': {
-            'name': 'python-vmLifeCycle-Clone',
-            'description': 'An example VM cloned using the rest API'
+            'name': 'python-vmLifeCycle-Clone-CloudInit',
+            'description': 'An example VM cloned using the rest API with cloud-init data',
+            'cloudInitData' : cloudInitData64
         }
     }
     connection.request('POST', '{0}/VirDomain/{1}/clone'.format(
