@@ -12,5 +12,5 @@ Fleet Manager API: https://api.scalecomputing.com/api/v2
 
 HyperCore API: http://[Your_Clustered_Node_IP}/rest/v1/docs/
 
-Also linked in the Support tab of the Control Panel of any HyperCore system
+A link to the HyperCore API documentation is also available in the Support tab of the Control Panel
 ![image](https://github.com/user-attachments/assets/107d6c07-5a70-4749-b6f6-8c4780982ba4)
