@@ -11,7 +11,7 @@
 # Customize the Message variables as needed for your preferences
 # Note: If you have >200 clusters, you will need to implement offsets and limits to iterate through all clusters
 # Increase or decrease the timedelta required to consider a cluster disconnected (default is 1 hour)
-# Modify the script if you do not want to be notifed when al clusters are online.
+# Modify the script if you do not want to be notifed when all clusters are online.
 #
 # --- How this script works ---
 # This script gets all clusters, looks at how long in the past the lastCheckin value is, and if it exceeds hte defined tiem delta, sends a slack alert about the cluster(s) being offline. If no clusters are offline, a confirmation message is sent.
