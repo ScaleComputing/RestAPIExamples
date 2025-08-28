@@ -14,7 +14,7 @@
 # Modify the script if you do not want to be notifed when all clusters are online.
 #
 # --- How this script works ---
-# This script gets all clusters, looks at how long in the past the lastCheckin value is, and if it exceeds hte defined tiem delta, sends a slack alert about the cluster(s) being offline. If no clusters are offline, a confirmation message is sent.
+# This script gets all clusters, looks at how long in the past the lastCheckin value is, and if it exceeds the defined time delta, sends a slack alert about the cluster(s) being offline. If no clusters are offline, a confirmation message is sent.
 
 import requests
 import json
