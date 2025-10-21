@@ -9,7 +9,7 @@ make sure to read the README on github.com/scalecomputing for info on using this
 THIS SCRIPT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND
 feel free to use without attribution in any way as seen fit, at your own risc.
 
-Usage: Set the variables in the Configuration section and run this script as a service.
+Usage: Set the variables in the Configuration section and run this script.
 
 William David van Collenburg
 Scale Computing
@@ -31,9 +31,9 @@ from statistics import mean
 
 # Cluster Connection
 BASE_URL = "https://your_hypercore_address/rest/v1"  # !! CHANGE THIS
-USERNAME = "admin"                             # !! CHANGE THIS
-PASSWORD = "admin"                             # !! CHANGE THIS
-VERIFY_SSL = False                                     # Set to True if you have valid SSL certs
+USERNAME = "admin"                                   # !! CHANGE THIS
+PASSWORD = "admin"                                   # !! CHANGE THIS
+VERIFY_SSL = False                                   # Set to True if you have valid SSL certs
 
 # Load Balancer Tunables
 DRY_RUN = True  # !! SET TO False TO ENABLE LIVE MIGRATIONS !!
