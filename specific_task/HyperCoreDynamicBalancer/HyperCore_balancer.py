@@ -51,7 +51,7 @@ import warnings
 import sys
 from collections import deque
 from statistics import mean
-import os # Import os module for environment variables
+import os
 
 # --- Configuration (Defaults - Can be overridden by ENV VARS) ---
 
@@ -76,9 +76,6 @@ DEFAULT_EXCLUDE_NODE_IPS = []                   # !! EDIT: List of node IPs to e
 # --- End of Configuration ---
 
 
-# Suppress InsecureRequestWarning if VERIFY_SSL is False (Value determined later)
-# We will suppress warnings globally if the final VERIFY_SSL value is False
-
 # --- Helper Function to get configuration values ---
 def get_config_value(env_var_name, default_value, expected_type=str):
     """
@@ -87,7 +84,6 @@ def get_config_value(env_var_name, default_value, expected_type=str):
     """
     env_value = os.getenv(env_var_name)
     if env_value is None:
-        # print(f"ENV: '{env_var_name}' not set, using default: {default_value}") # Optional: Verbose logging
         return default_value
 
     original_env_value = env_value # Keep original for error messages
@@ -98,19 +94,16 @@ def get_config_value(env_var_name, default_value, expected_type=str):
             if env_value in ('false', '0', 'no', 'n'): return False
             raise ValueError("Invalid boolean value") # Raise error if not recognized
         elif expected_type == int:
-            # Check for non-negative integers where appropriate
             val = int(env_value)
             if env_var_name.endswith(('_SECONDS', '_MINUTES')) and val < 0:
                  raise ValueError("Time values cannot be negative")
             return val
         elif expected_type == float:
-            # Check for non-negative percentages where appropriate
             val = float(env_value)
             if env_var_name.endswith('_PERCENT') and (val < 0 or val > 100):
                 raise ValueError("Percentage values must be between 0 and 100")
             return val
         elif expected_type == list:
-            # Assumes comma-separated strings, strips whitespace
             return [ip.strip() for ip in env_value.split(',') if ip.strip()]
         else: # Default is string
             return str(env_value)
@@ -170,21 +163,22 @@ class HyperCoreApiClient:
         return self._post("/VirDomain/action", action)
 
     def clear_vm_affinity(self, vm_uuid):
-        print(f"  - Clearing affinity for VM {vm_uuid}...")
-        payload = {"affinityStrategy": {"preferredNodeUUID": "", "backupNodeUUID": ""}}
+        """Clears ONLY the backup node affinity setting for a VM via PATCH."""
+        print(f"  - Clearing backup node affinity for VM {vm_uuid}...")
+        payload = {"affinityStrategy": {"backupNodeUUID": ""}}
         try:
-            self._patch(f"/VirDomain/{vm_uuid}", data=payload); print(f"  - Cleared affinity for VM {vm_uuid}."); return True
-        except requests.exceptions.RequestException: print(f"  - FAILED clear affinity for VM {vm_uuid}."); return False
+            self._patch(f"/VirDomain/{vm_uuid}", data=payload); print(f"  - Successfully cleared backup node affinity for VM {vm_uuid}."); return True
+        except requests.exceptions.RequestException: print(f"  - FAILED clear backup node affinity for VM {vm_uuid}."); return False
 
 
-# --- Load Balancer Class (No changes needed inside this class for ENV VARS) ---
+# --- Load Balancer Class ---
 class LoadBalancer:
     """Manages data collection, analysis, and migration logic."""
 
     def __init__(self, client, config):
         self.client = client
-        self.config = config # Config dict now contains values from ENV or defaults
-        self.exclude_ips_set = set(config.get('EXCLUDE_NODE_IPS', [])) # Use set for faster lookups
+        self.config = config
+        self.exclude_ips_set = set(config.get('EXCLUDE_NODE_IPS', []))
         if self.exclude_ips_set: print(f"INFO: Excluding nodes with IPs: {', '.join(self.exclude_ips_set)}")
 
         self.max_history_size = int((config['AVG_WINDOW_MINUTES'] * 60) / config['SAMPLE_INTERVAL_SECONDS'])
@@ -195,10 +189,6 @@ class LoadBalancer:
         self.last_migration_time = 0; self.active_migration_task = None
         self.vm_last_moved_times = {}; self.cluster_was_unstable = False; self.recovery_start_time = 0
 
-    # ... (All methods inside LoadBalancer remain the same as the previous version) ...
-    # ... collect_data, update_history, get_cluster_state, _get_vm_tags, ...
-    # ... _get_node_by_ip_suffix, check_and_warn_*, _check_anti_affinity_for_move, ...
-    # ... find_and_fix_*, find_migration_candidate, run ...
     def collect_data(self):
         print("Collecting cluster data...")
         try: return self.client.get_nodes(), self.client.get_vms(), self.client.get_vm_stats()
@@ -223,7 +213,7 @@ class LoadBalancer:
             node_uuid = node.get('uuid'); node_ip = node.get('lanIP', node_uuid)
             if not node_uuid: continue
             node_status = node.get('networkStatus'); is_excluded = node.get('lanIP') in self.exclude_ips_set
-            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded # Add exclusion check
+            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded
             exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not node.get('allowRunningVMs') else ""))
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
@@ -508,7 +498,7 @@ class LoadBalancer:
                         if status == "COMPLETE":
                             print(f"  - Task {task_tag} COMPLETE.")
                             if not self.config['DRY_RUN']: self.client.clear_vm_affinity(vm_uuid)
-                            else: print(f"  - *** DRY RUN: Would clear affinity ***")
+                            else: print(f"  - *** DRY RUN: Would clear backup node affinity ***")
                             self.vm_last_moved_times[vm_uuid] = time.time()
                             print(f"  - VM {vm_uuid} cooldown started.")
                         else: print(f"  - WARNING: Task {task_tag} state {status}. Affinity NOT cleared.")
@@ -577,7 +567,7 @@ class LoadBalancer:
                     if self.config['DRY_RUN']:
                         print(f"\n*** DRY RUN (Load Balance): Move '{vm_name}' ({vm_uuid}) FROM {src_node_state['name']} TO {target_node_state['name']} ***")
                         self.last_migration_time=time.time(); self.vm_last_moved_times[vm_uuid]=time.time()
-                        print(f"*** Cooldowns started (sim). Would clear affinity. ***")
+                        print(f"*** Cooldowns started (sim). Would clear backup node affinity. ***")
                         self.node_cpu_history.clear(); self.vm_cpu_history.clear()
                     else:
                         print(f"\n!!! EXECUTE (Load Balance): Move '{vm_name}' ({vm_uuid}) FROM {src_node_state['name']} TO {target_node_state['name']} !!!")
@@ -603,8 +593,7 @@ def main():
     # --- Read Config from ENV or Defaults ---
     print("Loading configuration...")
     base_url = get_config_value('SC_HOST', DEFAULT_BASE_URL)
-    # Ensure BASE_URL format includes /rest/v1
-    base_url = base_url.rstrip('/')
+    base_url = base_url.rstrip('/') # Ensure correct format
     if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
 
     username = get_config_value('SC_USERNAME', DEFAULT_USERNAME)
