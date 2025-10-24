@@ -23,10 +23,24 @@ Scale Computing
 
 dependencies: on Windows systems 'requests' must be installed manually (pip install requests)
 
-Environment Variables for Authentication (optional, overrides script defaults):
+Environment Variables (Optional - Override script defaults):
+# Connection
 SC_HOST=https://your-hypercore-host # Base URL (e.g., https://192.168.1.10)
 SC_USERNAME=your_api_username
 SC_PASSWORD=your_api_password
+SC_VERIFY_SSL=False # Set to True/1/Yes if cluster has a valid SSL cert
+
+# Behavior
+SC_DRY_RUN=True # Set to False/0/No to enable LIVE migrations
+SC_AVG_WINDOW_MINUTES=5
+SC_SAMPLE_INTERVAL_SECONDS=30
+SC_RAM_LIMIT_PERCENT=70.0
+SC_CPU_UPPER_THRESHOLD_PERCENT=80.0
+SC_CPU_LOWER_THRESHOLD_PERCENT=50.0
+SC_MIGRATION_COOLDOWN_MINUTES=5
+SC_VM_MOVE_COOLDOWN_MINUTES=30
+SC_RECOVERY_COOLDOWN_MINUTES=15
+SC_EXCLUDE_NODE_IPS="192.168.1.101,192.168.1.102" # Comma-separated IPs
 
 """
 
@@ -39,72 +53,72 @@ from collections import deque
 from statistics import mean
 import os # Import os module for environment variables
 
-# --- Configuration (Defaults) ---
+# --- Configuration (Defaults - Can be overridden by ENV VARS) ---
 
 # Cluster Connection - Used if corresponding SC_* environment variables are NOT set
-DEFAULT_BASE_URL = "https://your-hypercore-host/rest/v1"  # !! EDIT if not using ENV VARS
-DEFAULT_USERNAME = "your_api_username"                             # !! EDIT if not using ENV VARS
-DEFAULT_PASSWORD = "your_api_password"                             # !! EDIT if not using ENV VARS
-VERIFY_SSL = False                                             # Set to True if cluster has a valid SSL cert
+DEFAULT_BASE_URL = "https://your-HyperCore-cluster-ip/rest/v1" # !! EDIT if not using ENV VARS
+DEFAULT_USERNAME = "your-username"                             # !! EDIT if not using ENV VARS
+DEFAULT_PASSWORD = "your-password"                             # !! EDIT if not using ENV VARS
+DEFAULT_VERIFY_SSL = False                                     # Default SSL verification
 
-# Load Balancer Tunables
-DRY_RUN = True  # !! SAFETY: Set to False to enable LIVE migrations !!
-
-# How long (in minutes) of performance data to average for decisions
-AVG_WINDOW_MINUTES = 5
-
-# How often (in seconds) to collect new performance data
-SAMPLE_INTERVAL_SECONDS = 30
-
-# RAM Constraint: Do not migrate a VM *to* a node if it would exceed this usage %
-RAM_LIMIT_PERCENT = 70.0
-
-# CPU Thresholds for Load Balancing:
-# A node's avg CPU must be *above* this % to be considered overloaded
-CPU_UPPER_THRESHOLD_PERCENT = 80.0
-# A node's avg CPU must be *below* this % to be considered a target for load balancing
-CPU_LOWER_THRESHOLD_PERCENT = 50.0
-
-# Cooldown Periods (in minutes):
-# Wait after *any* migration finishes before attempting another
-MIGRATION_COOLDOWN_MINUTES = 3
-# Wait after a *specific VM* is moved before it can be moved again
-VM_MOVE_COOLDOWN_MINUTES = 30
-# Wait after a node comes back ONLINE before resuming operations
-RECOVERY_COOLDOWN_MINUTES = 15
-
-# Node Exclusion: List of node LAN IP addresses to completely exclude from balancing actions.
-# VMs will not be moved TO or FROM these nodes by this script. Affinity rules targeting these nodes will generate warnings.
-EXCLUDE_NODE_IPS = [] # Add IPs as strings, e.g., ["192.168.1.101", "192.168.1.102"]
+# Load Balancer Tunables - Used if corresponding SC_* environment variables are NOT set
+DEFAULT_DRY_RUN = True                          # !! SAFETY: Set to False to enable LIVE migrations !!
+DEFAULT_AVG_WINDOW_MINUTES = 5                  # How long (in minutes) of performance data to average for decisions
+DEFAULT_SAMPLE_INTERVAL_SECONDS = 30            # How often (in seconds) to collect new performance data
+DEFAULT_RAM_LIMIT_PERCENT = 70.0                # RAM Constraint: Do not migrate a VM *to* a node if it would exceed this usage %
+DEFAULT_CPU_UPPER_THRESHOLD_PERCENT = 80.0      # CPU Threshold: Node avg CPU must be *above* this % to be source
+DEFAULT_CPU_LOWER_THRESHOLD_PERCENT = 50.0      # CPU Threshold: Node avg CPU must be *below* this % to be target
+DEFAULT_MIGRATION_COOLDOWN_MINUTES = 5          # Wait after *any* migration finishes before attempting another
+DEFAULT_VM_MOVE_COOLDOWN_MINUTES = 30           # Wait after a *specific VM* is moved before it can be moved again
+DEFAULT_RECOVERY_COOLDOWN_MINUTES = 15          # Wait after a node comes back ONLINE before resuming operations
+DEFAULT_EXCLUDE_NODE_IPS = []                   # !! EDIT: List of node IPs to exclude, e.g., ["192.168.1.101"]
 
 # --- End of Configuration ---
 
 
-# Suppress InsecureRequestWarning if VERIFY_SSL is False
-if not VERIFY_SSL:
+# Suppress InsecureRequestWarning if VERIFY_SSL is False (Value determined later)
+# We will suppress warnings globally if the final VERIFY_SSL value is False
+
+# --- Helper Function to get configuration values ---
+def get_config_value(env_var_name, default_value, expected_type=str):
+    """
+    Reads an environment variable, attempts to cast it, and returns
+    the value or the default if missing/invalid.
+    """
+    env_value = os.getenv(env_var_name)
+    if env_value is None:
+        # print(f"ENV: '{env_var_name}' not set, using default: {default_value}") # Optional: Verbose logging
+        return default_value
+
+    original_env_value = env_value # Keep original for error messages
     try:
-        from urllib3.exceptions import InsecureRequestWarning
-        warnings.simplefilter('ignore', InsecureRequestWarning)
-    except ImportError:
-        pass # urllib3 might not be available
+        if expected_type == bool:
+            env_value = env_value.lower()
+            if env_value in ('true', '1', 'yes', 'y'): return True
+            if env_value in ('false', '0', 'no', 'n'): return False
+            raise ValueError("Invalid boolean value") # Raise error if not recognized
+        elif expected_type == int:
+            # Check for non-negative integers where appropriate
+            val = int(env_value)
+            if env_var_name.endswith(('_SECONDS', '_MINUTES')) and val < 0:
+                 raise ValueError("Time values cannot be negative")
+            return val
+        elif expected_type == float:
+            # Check for non-negative percentages where appropriate
+            val = float(env_value)
+            if env_var_name.endswith('_PERCENT') and (val < 0 or val > 100):
+                raise ValueError("Percentage values must be between 0 and 100")
+            return val
+        elif expected_type == list:
+            # Assumes comma-separated strings, strips whitespace
+            return [ip.strip() for ip in env_value.split(',') if ip.strip()]
+        else: # Default is string
+            return str(env_value)
+    except ValueError as e:
+        print(f"WARN: Invalid value '{original_env_value}' for ENV VAR '{env_var_name}' (expected {expected_type.__name__}): {e}. Using default: {default_value}")
+        return default_value
 
-# --- Helper Function to get credentials ---
-def get_credentials():
-    """Gets API credentials, prioritizing environment variables."""
-    env_host = os.getenv('SC_HOST')
-    env_user = os.getenv('SC_USERNAME')
-    env_pass = os.getenv('SC_PASSWORD')
-
-    if env_host and env_user and env_pass:
-        print("Using credentials from environment variables (SC_HOST, SC_USERNAME, SC_PASSWORD).")
-        base_url = env_host.rstrip('/')
-        if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
-        return base_url, env_user, env_pass
-    else:
-        print("Environment variables not fully set. Using script defaults.")
-        return DEFAULT_BASE_URL, DEFAULT_USERNAME, DEFAULT_PASSWORD
-
-
+# --- API Client Class ---
 class HyperCoreApiClient:
     """A simple client for interacting with the Scale Computing HyperCore REST API."""
 
@@ -112,6 +126,12 @@ class HyperCoreApiClient:
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.verify = verify_ssl
+        # Suppress warnings if SSL verification is disabled
+        if not verify_ssl:
+            try:
+                from urllib3.exceptions import InsecureRequestWarning
+                warnings.simplefilter('ignore', InsecureRequestWarning)
+            except ImportError: pass
 
     def login(self, username, password):
         try:
@@ -157,12 +177,13 @@ class HyperCoreApiClient:
         except requests.exceptions.RequestException: print(f"  - FAILED clear affinity for VM {vm_uuid}."); return False
 
 
+# --- Load Balancer Class (No changes needed inside this class for ENV VARS) ---
 class LoadBalancer:
     """Manages data collection, analysis, and migration logic."""
 
     def __init__(self, client, config):
         self.client = client
-        self.config = config
+        self.config = config # Config dict now contains values from ENV or defaults
         self.exclude_ips_set = set(config.get('EXCLUDE_NODE_IPS', [])) # Use set for faster lookups
         if self.exclude_ips_set: print(f"INFO: Excluding nodes with IPs: {', '.join(self.exclude_ips_set)}")
 
@@ -174,6 +195,10 @@ class LoadBalancer:
         self.last_migration_time = 0; self.active_migration_task = None
         self.vm_last_moved_times = {}; self.cluster_was_unstable = False; self.recovery_start_time = 0
 
+    # ... (All methods inside LoadBalancer remain the same as the previous version) ...
+    # ... collect_data, update_history, get_cluster_state, _get_vm_tags, ...
+    # ... _get_node_by_ip_suffix, check_and_warn_*, _check_anti_affinity_for_move, ...
+    # ... find_and_fix_*, find_migration_candidate, run ...
     def collect_data(self):
         print("Collecting cluster data...")
         try: return self.client.get_nodes(), self.client.get_vms(), self.client.get_vm_stats()
@@ -198,7 +223,7 @@ class LoadBalancer:
             node_uuid = node.get('uuid'); node_ip = node.get('lanIP', node_uuid)
             if not node_uuid: continue
             node_status = node.get('networkStatus'); is_excluded = node.get('lanIP') in self.exclude_ips_set
-            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded
+            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded # Add exclusion check
             exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not node.get('allowRunningVMs') else ""))
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
@@ -570,24 +595,41 @@ class LoadBalancer:
             except Exception as e: # Catch unexpected errors within the loop
                  print(f"\n!!! UNEXPECTED ERROR IN CYCLE: {e} !!!")
                  print("Attempting to continue after delay...")
-                 time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2) # Longer delay after error
+                 time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2) # Longer delay
 
 # --- Main Execution ---
 def main():
     """Sets up configuration, logs in, runs the balancer loop, and handles logout."""
-    config = { # Consolidate config
-        'DRY_RUN': DRY_RUN, 'AVG_WINDOW_MINUTES': AVG_WINDOW_MINUTES,
-        'SAMPLE_INTERVAL_SECONDS': SAMPLE_INTERVAL_SECONDS, 'RAM_LIMIT_PERCENT': RAM_LIMIT_PERCENT,
-        'CPU_UPPER_THRESHOLD_PERCENT': CPU_UPPER_THRESHOLD_PERCENT, 'CPU_LOWER_THRESHOLD_PERCENT': CPU_LOWER_THRESHOLD_PERCENT,
-        'MIGRATION_COOLDOWN_MINUTES': MIGRATION_COOLDOWN_MINUTES, 'VM_MOVE_COOLDOWN_MINUTES': VM_MOVE_COOLDOWN_MINUTES,
-        'RECOVERY_COOLDOWN_MINUTES': RECOVERY_COOLDOWN_MINUTES, 'EXCLUDE_NODE_IPS': EXCLUDE_NODE_IPS # Include exclude list
-    }
-    base_url, username, password = get_credentials() # Get credentials
-    client = HyperCoreApiClient(base_url, verify_ssl=VERIFY_SSL)
-    balancer = LoadBalancer(client, config)
+    # --- Read Config from ENV or Defaults ---
+    print("Loading configuration...")
+    base_url = get_config_value('SC_HOST', DEFAULT_BASE_URL)
+    # Ensure BASE_URL format includes /rest/v1
+    base_url = base_url.rstrip('/')
+    if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
 
+    username = get_config_value('SC_USERNAME', DEFAULT_USERNAME)
+    password = get_config_value('SC_PASSWORD', DEFAULT_PASSWORD)
+    verify_ssl = get_config_value('SC_VERIFY_SSL', DEFAULT_VERIFY_SSL, bool)
+
+    config = { # Consolidate config for the balancer instance
+        'DRY_RUN': get_config_value('SC_DRY_RUN', DEFAULT_DRY_RUN, bool),
+        'AVG_WINDOW_MINUTES': get_config_value('SC_AVG_WINDOW_MINUTES', DEFAULT_AVG_WINDOW_MINUTES, int),
+        'SAMPLE_INTERVAL_SECONDS': get_config_value('SC_SAMPLE_INTERVAL_SECONDS', DEFAULT_SAMPLE_INTERVAL_SECONDS, int),
+        'RAM_LIMIT_PERCENT': get_config_value('SC_RAM_LIMIT_PERCENT', DEFAULT_RAM_LIMIT_PERCENT, float),
+        'CPU_UPPER_THRESHOLD_PERCENT': get_config_value('SC_CPU_UPPER_THRESHOLD_PERCENT', DEFAULT_CPU_UPPER_THRESHOLD_PERCENT, float),
+        'CPU_LOWER_THRESHOLD_PERCENT': get_config_value('SC_CPU_LOWER_THRESHOLD_PERCENT', DEFAULT_CPU_LOWER_THRESHOLD_PERCENT, float),
+        'MIGRATION_COOLDOWN_MINUTES': get_config_value('SC_MIGRATION_COOLDOWN_MINUTES', DEFAULT_MIGRATION_COOLDOWN_MINUTES, int),
+        'VM_MOVE_COOLDOWN_MINUTES': get_config_value('SC_VM_MOVE_COOLDOWN_MINUTES', DEFAULT_VM_MOVE_COOLDOWN_MINUTES, int),
+        'RECOVERY_COOLDOWN_MINUTES': get_config_value('SC_RECOVERY_COOLDOWN_MINUTES', DEFAULT_RECOVERY_COOLDOWN_MINUTES, int),
+        'EXCLUDE_NODE_IPS': get_config_value('SC_EXCLUDE_NODE_IPS', DEFAULT_EXCLUDE_NODE_IPS, list)
+    }
+    
+    # --- Initialize and Login ---
+    client = HyperCoreApiClient(base_url, verify_ssl=verify_ssl)
+    balancer = LoadBalancer(client, config)
     if not client.login(username, password): sys.exit(1)
 
+    # --- Run Balancer ---
     try: balancer.run()
     except KeyboardInterrupt: print("\nCaught interrupt (Ctrl+C), stopping...")
     except Exception as e: print(f"\nFATAL ERROR during execution: {e}")
