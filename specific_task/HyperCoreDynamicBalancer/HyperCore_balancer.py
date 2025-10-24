@@ -237,11 +237,14 @@ class LoadBalancer:
         return [t.strip() for t in (vm.get('tags') or "").split(',') if t.strip()]
 
     def _get_node_by_ip_suffix(self, nodes, suffix):
-        target = f".{suffix}"
-        for node in nodes: ip = node.get('lanIP');
-        if ip and ip.endswith(target): return node
-        return None
-
+        """Finds a node object by the last octet of its LAN IP."""
+        target_suffix = f".{suffix}"
+        for node in nodes:
+            lan_ip = node.get('lanIP')
+            if lan_ip and lan_ip.endswith(target_suffix):
+                return node # Return immediately on first match
+        return None # Return None if no match is found
+    
     def check_and_warn_node_affinity_violations(self, vms, nodes):
         node_map = {n['uuid']: n for n in nodes if n.get('uuid')}; violations = 0
         for vm in vms:
