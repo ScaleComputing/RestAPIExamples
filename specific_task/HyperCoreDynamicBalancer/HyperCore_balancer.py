@@ -15,8 +15,8 @@ HyperCore tags that can be used with this script:
 anti_  --> tag two vms that should not run on the same node with each others vm name. e.g. anti_SQL01 on sql server SQL02
            and anti_SQL02 on sql server SQL01
 
-node_  --> tag a vm that should be pinned on a certain node with the last octet of the node ip address. e.g. node_101 to pin
-           the vm to a node with IP address 192.168.0.101
+node_  --> tag a vm that should be pinned on a certain node with the last octet of the node ip address. e.g. node_1 to pin
+           the vm to a node with IP address 192.168.0.1
 
 William David van Collenburg
 Scale Computing
