@@ -15,8 +15,8 @@ HyperCore tags that can be used with this script:
 anti_  --> tag two vms that should not run on the same node with each others vm name. e.g. anti_SQL01 on sql server SQL02
            and anti_SQL02 on sql server SQL01
 
-node_  --> tag a vm that should be pinned on a certain node with the last octet of the node ip address. e.g. node_1 to pin
-           the vm to a node with IP address 192.168.0.1
+node_  --> tag a vm that should be pinned on a certain node with the last octet of the node ip address. e.g. node_101 to pin
+           the vm to a node with IP address 192.168.0.101
 
 William David van Collenburg
 Scale Computing
@@ -56,7 +56,7 @@ import os
 # --- Configuration (Defaults - Can be overridden by ENV VARS) ---
 
 # Cluster Connection - Used if corresponding SC_* environment variables are NOT set
-DEFAULT_BASE_URL = "https://your-HyperCore-cluster-ip/rest/v1" # !! EDIT if not using ENV VARS
+DEFAULT_BASE_URL = "https://your-HyperCore-cluster-ip/rest/v1"  # !! EDIT if not using ENV VARS
 DEFAULT_USERNAME = "your-username"                             # !! EDIT if not using ENV VARS
 DEFAULT_PASSWORD = "your-password"                             # !! EDIT if not using ENV VARS
 DEFAULT_VERIFY_SSL = False                                     # Default SSL verification
@@ -162,14 +162,7 @@ class HyperCoreApiClient:
         action = [{"virDomainUUID": vm_uuid, "actionType": "LIVEMIGRATE", "nodeUUID": target_node_uuid}]
         return self._post("/VirDomain/action", action)
 
-    def clear_vm_affinity(self, vm_uuid):
-        """Clears ONLY the backup node affinity setting for a VM via PATCH."""
-        print(f"  - Clearing backup node affinity for VM {vm_uuid}...")
-        payload = {"affinityStrategy": {"backupNodeUUID": ""}}
-        try:
-            self._patch(f"/VirDomain/{vm_uuid}", data=payload); print(f"  - Successfully cleared backup node affinity for VM {vm_uuid}."); return True
-        except requests.exceptions.RequestException: print(f"  - FAILED clear backup node affinity for VM {vm_uuid}."); return False
-
+    # Removed clear_vm_affinity
 
 # --- Load Balancer Class ---
 class LoadBalancer:
@@ -207,14 +200,27 @@ class LoadBalancer:
                 self.vm_cpu_history[vm_uuid].append(stat.get('cpuUsage', 0.0))
 
     def get_cluster_state(self, nodes, vms):
-        """Analyzes nodes, marking excluded or offline ones as unusable."""
+        """Analyzes nodes, marking excluded, offline, or non-virtualization ones as unusable."""
         node_analysis = {}; vm_map = {vm['uuid']: vm for vm in vms if vm.get('uuid')}
         for node in nodes:
             node_uuid = node.get('uuid'); node_ip = node.get('lanIP', node_uuid)
             if not node_uuid: continue
-            node_status = node.get('networkStatus'); is_excluded = node.get('lanIP') in self.exclude_ips_set
-            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded
-            exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not node.get('allowRunningVMs') else ""))
+
+            # --- Determine Usability ---
+            node_status = node.get('networkStatus')
+            supports_virt = node.get('supportsVirtualization', True) # Default to True if key missing
+            virt_online = node.get('virtualizationOnline', True) # Default to True if key missing
+            is_excluded = node.get('lanIP') in self.exclude_ips_set
+            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded and supports_virt and virt_online
+
+            exclude_reason = ""
+            if is_excluded: exclude_reason = "Manually Excluded"
+            elif node_status != 'ONLINE': exclude_reason = "Offline"
+            elif not node.get('allowRunningVMs', False): exclude_reason = "VMs Disallowed"
+            elif not supports_virt: exclude_reason = "No Virtualization Support" # Handles witness nodes etc.
+            elif not virt_online: exclude_reason = "Virtualization Offline" # Handles witness nodes etc.
+            # --- End Usability Check ---
+
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
             if is_usable:
@@ -231,20 +237,17 @@ class LoadBalancer:
                 "ram_percent": ram_percent, "running_vms": running_vms, "full_object": node, "is_usable": is_usable, "exclude_reason": exclude_reason
             }
         return node_analysis
-
+    
     def _get_vm_tags(self, vm):
         if not vm: return []
         return [t.strip() for t in (vm.get('tags') or "").split(',') if t.strip()]
 
     def _get_node_by_ip_suffix(self, nodes, suffix):
-        """Finds a node object by the last octet of its LAN IP."""
-        target_suffix = f".{suffix}"
-        for node in nodes:
-            lan_ip = node.get('lanIP')
-            if lan_ip and lan_ip.endswith(target_suffix):
-                return node # Return immediately on first match
-        return None # Return None if no match is found
-    
+        target = f".{suffix}"
+        for node in nodes: ip = node.get('lanIP');
+        if ip and ip.endswith(target): return node
+        return None
+
     def check_and_warn_node_affinity_violations(self, vms, nodes):
         node_map = {n['uuid']: n for n in nodes if n.get('uuid')}; violations = 0
         for vm in vms:
@@ -264,6 +267,7 @@ class LoadBalancer:
             if current_uuid != target_uuid:
                  if target_status == 'OFFLINE': print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (OFFLINE). Is on '{current_id}'.")
                  elif is_target_excluded: print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (EXCLUDED). Is on '{current_id}'.")
+                 elif not target_node.get('supportsVirtualization', True) or not target_node.get('virtualizationOnline', True): print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (NO VIRT SUPPORT/OFFLINE). Is on '{current_id}'.") # Check virt support
                  else: print(f"  - AFF VIOLATION: VM '{vm.get('name')}' wants '{target_ip}'. Is on '{current_id}'.")
                  violations += 1
         if violations == 0: print("  - No node affinity violations found.")
@@ -299,6 +303,7 @@ class LoadBalancer:
         """Finds VMs violating node affinity and tries to move them home, evicting if needed."""
         print("Checking for actionable node affinity violations...")
         vm_map = {vm['uuid']: vm for vm in vms if vm.get('uuid')}
+        action_initiated = False
 
         for vm in vms:
             vm_uuid = vm.get('uuid'); current_node_uuid = vm.get('nodeUUID')
@@ -325,16 +330,20 @@ class LoadBalancer:
                 if not target_node_state or not target_node_state.get('is_usable'):
                     print(f"  - Cannot fix: Target node {target_ip} is unusable ({target_node_state.get('exclude_reason', 'Offline/Disallowed')})."); continue
 
-                proj_ram = target_node_state['used_ram'] + vm['mem']; total_ram = target_node_state.get('total_ram', 1)
+                proj_ram = target_node_state['used_ram'] + vm.get('mem', 0); total_ram = target_node_state.get('total_ram', 1)
                 proj_pct = (proj_ram / total_ram) * 100.0 if total_ram > 0 else 100.0
                 ram_ok = proj_pct <= self.config['RAM_LIMIT_PERCENT']
                 
                 if not ram_ok: # --- Attempt Eviction ---
                     print(f"  - RAM fail ({proj_pct:.1f}% needed). Try eviction from {target_ip}...")
                     ram_needed = proj_ram - (total_ram * self.config['RAM_LIMIT_PERCENT'] / 100.0)
-                    vms_on_target = sorted([vm_map.get(v['uuid']) for v in target_node_state.get('running_vms', []) if vm_map.get(v['uuid'])], key=lambda x: x.get('mem', 0))
+                    vms_on_target_info = target_node_state.get('running_vms', [])
+                    valid_vms_on_target = [vm_map.get(v_info['uuid']) for v_info in vms_on_target_info if vm_map.get(v_info['uuid'])]
+                    if not valid_vms_on_target: print(f"    - No valid VMs found on {target_ip} to evict."); continue
+                    vms_on_target_sorted = sorted(valid_vms_on_target, key=lambda x: x.get('mem', 0))
+
                     eviction_cand = None; eviction_dest = None
-                    for cand in vms_on_target:
+                    for cand in vms_on_target_sorted:
                         cand_uuid = cand['uuid']; cand_mem = cand.get('mem', 0)
                         target_ip_suffix = target_node_obj.get('lanIP', '').split('.')[-1]
                         if any(t == f"node_{target_ip_suffix}" for t in self._get_vm_tags(cand)): print(f"    - Skip {cand['name']}: pinned."); continue
@@ -368,7 +377,7 @@ class LoadBalancer:
                                 if task: self.active_migration_task = { "taskTag": task, "vm_uuid": evic_vm_uuid }; print(f"  - Eviction Task: {task}")
                                 else: print("  - Eviction init (no task)."); self.last_migration_time=time.time(); self.vm_last_moved_times[evic_vm_uuid]=time.time()
                             except requests.exceptions.RequestException: print(f"  - Eviction failed."); self.last_migration_time = time.time()
-                        return True # Eviction initiated
+                        action_initiated = True; break 
                     else: print(f"  - WARN: Cannot resolve RAM conflict for '{vm['name']}'. No eviction possible."); continue
                 
                 # --- Proceed if RAM OK (or eviction started) ---
@@ -386,15 +395,18 @@ class LoadBalancer:
                             if task: self.active_migration_task = { "taskTag": task, "vm_uuid": vm_uuid }; print(f"  - Task: {task}")
                             else: print("  - Initiated (no task tag)."); self.last_migration_time=time.time(); self.vm_last_moved_times[vm_uuid]=time.time()
                         except requests.exceptions.RequestException: print(f"  - Failed."); self.last_migration_time = time.time()
-                    return True # Fix initiated
+                    action_initiated = True; break 
+            
+            if action_initiated: break
 
-        print("  - No actionable node affinity violations found.")
-        return False
+        if not action_initiated: print("  - No actionable node affinity violations found.")
+        return action_initiated
 
     def find_and_fix_anti_affinity_violation(self, cluster_state, vms, nodes):
         """Finds anti-affinity violations, tries to fix them avoiding pinned VMs."""
         print("Checking for actionable anti-affinity violations...")
         vm_name_map = {vm['name']: vm for vm in vms if vm.get('name')}; vm_uuid_map = {vm['uuid']: vm for vm in vms if vm.get('uuid')}
+        action_initiated = False
 
         for vm_a_uuid, vm_a in vm_uuid_map.items():
             tags_a = self._get_vm_tags(vm_a); node_a = vm_a.get('nodeUUID')
@@ -440,10 +452,11 @@ class LoadBalancer:
                             if task: self.active_migration_task = { "taskTag": task, "vm_uuid": vm_uuid_move }; print(f"  - Task: {task}")
                             else: print("  - No task tag."); self.last_migration_time=time.time(); self.vm_last_moved_times[vm_uuid_move]=time.time()
                         except requests.exceptions.RequestException: print(f"  - Failed."); self.last_migration_time = time.time()
-                    return True # Fix initiated
+                    action_initiated = True; break # Exit inner tag loop
+            if action_initiated: break # Exit outer VM loop
 
-        print("  - No actionable anti-affinity violations found.")
-        return False
+        if not action_initiated: print("  - No actionable anti-affinity violations found.")
+        return action_initiated
 
     def find_migration_candidate(self, cluster_state, vms, nodes):
         """Finds migration candidates for load balancing, respecting constraints."""
@@ -500,11 +513,10 @@ class LoadBalancer:
                     if status in ["COMPLETE", "ERROR", "UNINITIALIZED", "UNKNOWN"]:
                         if status == "COMPLETE":
                             print(f"  - Task {task_tag} COMPLETE.")
-                            if not self.config['DRY_RUN']: self.client.clear_vm_affinity(vm_uuid)
-                            else: print(f"  - *** DRY RUN: Would clear backup node affinity ***")
+                            # Removed clear_vm_affinity call
                             self.vm_last_moved_times[vm_uuid] = time.time()
                             print(f"  - VM {vm_uuid} cooldown started.")
-                        else: print(f"  - WARNING: Task {task_tag} state {status}. Affinity NOT cleared.")
+                        else: print(f"  - WARNING: Task {task_tag} state {status}.")
                         self.active_migration_task = None; self.last_migration_time = time.time()
                         self.node_cpu_history.clear(); self.vm_cpu_history.clear() # Clear history after move
                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
@@ -570,7 +582,7 @@ class LoadBalancer:
                     if self.config['DRY_RUN']:
                         print(f"\n*** DRY RUN (Load Balance): Move '{vm_name}' ({vm_uuid}) FROM {src_node_state['name']} TO {target_node_state['name']} ***")
                         self.last_migration_time=time.time(); self.vm_last_moved_times[vm_uuid]=time.time()
-                        print(f"*** Cooldowns started (sim). Would clear backup node affinity. ***")
+                        print(f"*** Cooldowns started (simulated). ***")
                         self.node_cpu_history.clear(); self.vm_cpu_history.clear()
                     else:
                         print(f"\n!!! EXECUTE (Load Balance): Move '{vm_name}' ({vm_uuid}) FROM {src_node_state['name']} TO {target_node_state['name']} !!!")
@@ -587,23 +599,20 @@ class LoadBalancer:
 
             except Exception as e: # Catch unexpected errors within the loop
                  print(f"\n!!! UNEXPECTED ERROR IN CYCLE: {e} !!!")
+                 import traceback
+                 traceback.print_exc() # Print full traceback for debugging
                  print("Attempting to continue after delay...")
                  time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2) # Longer delay
 
 # --- Main Execution ---
 def main():
     """Sets up configuration, logs in, runs the balancer loop, and handles logout."""
-    # --- Read Config from ENV or Defaults ---
     print("Loading configuration...")
-    base_url = get_config_value('SC_HOST', DEFAULT_BASE_URL)
-    base_url = base_url.rstrip('/') # Ensure correct format
+    base_url = get_config_value('SC_HOST', DEFAULT_BASE_URL); base_url = base_url.rstrip('/')
     if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
-
-    username = get_config_value('SC_USERNAME', DEFAULT_USERNAME)
-    password = get_config_value('SC_PASSWORD', DEFAULT_PASSWORD)
+    username = get_config_value('SC_USERNAME', DEFAULT_USERNAME); password = get_config_value('SC_PASSWORD', DEFAULT_PASSWORD)
     verify_ssl = get_config_value('SC_VERIFY_SSL', DEFAULT_VERIFY_SSL, bool)
-
-    config = { # Consolidate config for the balancer instance
+    config = {
         'DRY_RUN': get_config_value('SC_DRY_RUN', DEFAULT_DRY_RUN, bool),
         'AVG_WINDOW_MINUTES': get_config_value('SC_AVG_WINDOW_MINUTES', DEFAULT_AVG_WINDOW_MINUTES, int),
         'SAMPLE_INTERVAL_SECONDS': get_config_value('SC_SAMPLE_INTERVAL_SECONDS', DEFAULT_SAMPLE_INTERVAL_SECONDS, int),
@@ -615,13 +624,8 @@ def main():
         'RECOVERY_COOLDOWN_MINUTES': get_config_value('SC_RECOVERY_COOLDOWN_MINUTES', DEFAULT_RECOVERY_COOLDOWN_MINUTES, int),
         'EXCLUDE_NODE_IPS': get_config_value('SC_EXCLUDE_NODE_IPS', DEFAULT_EXCLUDE_NODE_IPS, list)
     }
-    
-    # --- Initialize and Login ---
-    client = HyperCoreApiClient(base_url, verify_ssl=verify_ssl)
-    balancer = LoadBalancer(client, config)
+    client = HyperCoreApiClient(base_url, verify_ssl=verify_ssl); balancer = LoadBalancer(client, config)
     if not client.login(username, password): sys.exit(1)
-
-    # --- Run Balancer ---
     try: balancer.run()
     except KeyboardInterrupt: print("\nCaught interrupt (Ctrl+C), stopping...")
     except Exception as e: print(f"\nFATAL ERROR during execution: {e}")
