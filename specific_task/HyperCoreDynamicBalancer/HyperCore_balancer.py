@@ -162,7 +162,8 @@ class HyperCoreApiClient:
         action = [{"virDomainUUID": vm_uuid, "actionType": "LIVEMIGRATE", "nodeUUID": target_node_uuid}]
         return self._post("/VirDomain/action", action)
 
-    # Removed clear_vm_affinity
+    # clear_vm_affinity method removed
+
 
 # --- Load Balancer Class ---
 class LoadBalancer:
@@ -206,10 +207,7 @@ class LoadBalancer:
             node_uuid = node.get('uuid'); node_ip = node.get('lanIP', node_uuid)
             if not node_uuid: continue
 
-            # --- Determine Usability ---
-            node_status = node.get('networkStatus')
-            supports_virt = node.get('supportsVirtualization', True) # Default to True if key missing
-            virt_online = node.get('virtualizationOnline', True) # Default to True if key missing
+            node_status = node.get('networkStatus'); supports_virt = node.get('supportsVirtualization', True); virt_online = node.get('virtualizationOnline', True)
             is_excluded = node.get('lanIP') in self.exclude_ips_set
             is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded and supports_virt and virt_online
 
@@ -217,9 +215,8 @@ class LoadBalancer:
             if is_excluded: exclude_reason = "Manually Excluded"
             elif node_status != 'ONLINE': exclude_reason = "Offline"
             elif not node.get('allowRunningVMs', False): exclude_reason = "VMs Disallowed"
-            elif not supports_virt: exclude_reason = "No Virtualization Support" # Handles witness nodes etc.
-            elif not virt_online: exclude_reason = "Virtualization Offline" # Handles witness nodes etc.
-            # --- End Usability Check ---
+            elif not supports_virt: exclude_reason = "No Virtualization Support"
+            elif not virt_online: exclude_reason = "Virtualization Offline"
 
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
@@ -237,7 +234,7 @@ class LoadBalancer:
                 "ram_percent": ram_percent, "running_vms": running_vms, "full_object": node, "is_usable": is_usable, "exclude_reason": exclude_reason
             }
         return node_analysis
-    
+
     def _get_vm_tags(self, vm):
         if not vm: return []
         return [t.strip() for t in (vm.get('tags') or "").split(',') if t.strip()]
@@ -267,7 +264,7 @@ class LoadBalancer:
             if current_uuid != target_uuid:
                  if target_status == 'OFFLINE': print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (OFFLINE). Is on '{current_id}'.")
                  elif is_target_excluded: print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (EXCLUDED). Is on '{current_id}'.")
-                 elif not target_node.get('supportsVirtualization', True) or not target_node.get('virtualizationOnline', True): print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (NO VIRT SUPPORT/OFFLINE). Is on '{current_id}'.") # Check virt support
+                 elif not target_node.get('supportsVirtualization', True) or not target_node.get('virtualizationOnline', True): print(f"  - AFF WARN: VM '{vm.get('name')}' wants '{target_ip}' (NO VIRT SUPPORT/OFFLINE). Is on '{current_id}'.")
                  else: print(f"  - AFF VIOLATION: VM '{vm.get('name')}' wants '{target_ip}'. Is on '{current_id}'.")
                  violations += 1
         if violations == 0: print("  - No node affinity violations found.")
@@ -467,9 +464,10 @@ class LoadBalancer:
         busiest = sorted_nodes[-1]; targets = sorted_nodes[:-1]; coolest = targets[0]
 
         if not (busiest['avg_cpu'] > self.config['CPU_UPPER_THRESHOLD_PERCENT'] and coolest['avg_cpu'] < self.config['CPU_LOWER_THRESHOLD_PERCENT']):
-            return None, None, None # Not imbalanced
+             if coolest: print(f"  - No imbalance detected based on thresholds ({self.config['CPU_UPPER_THRESHOLD_PERCENT']}% / {self.config['CPU_LOWER_THRESHOLD_PERCENT']}%). Busiest: {busiest['avg_cpu']:.1f}%, Coolest: {coolest['avg_cpu']:.1f}%")
+             return None, None, None # Not imbalanced enough or only one usable node
 
-        print(f"Imbalance: {busiest['name']} ({busiest['avg_cpu']:.1f}%) hot; {coolest['name']} ({coolest['avg_cpu']:.1f}%) cool.")
+        print(f"Imbalance detected: Node {busiest['name']} (avg {busiest['avg_cpu']:.1f}%) hot; Node {coolest['name']} (avg {coolest['avg_cpu']:.1f}%) cool.")
         vm_map = {vm['uuid']: vm for vm in vms if vm.get('uuid')}
 
         for vm_info in busiest['running_vms']: # Already sorted by VM CPU
@@ -486,7 +484,7 @@ class LoadBalancer:
                 print(f"  -   Check target: {target['name']} ({target['avg_cpu']:.1f}%)")
                 vm_mem = vm_info.get('mem', 0); total_ram = target.get('total_ram', 1)
                 proj_ram = target['used_ram'] + vm_mem; proj_pct = (proj_ram / total_ram) * 100.0 if total_ram > 0 else 100.0
-                if proj_pct > self.config['RAM_LIMIT_PERCENT']: print(f"  -     Skip target: RAM ({proj_pct:.1f}% needed)."); continue
+                if proj_pct > self.config['RAM_LIMIT_PERCENT']: print(f"  -     Skip target: RAM ({proj_pct:.1f}% needed > {self.config['RAM_LIMIT_PERCENT']}% limit)."); continue
                 print(f"  -     RAM OK ({proj_pct:.1f}%).")
                 allowed, reason = self._check_anti_affinity_for_move(vm_uuid, target['uuid'], vms)
                 if not allowed: print(f"  -     Skip target: Anti-Affinity ({reason})."); continue
@@ -607,25 +605,96 @@ class LoadBalancer:
 # --- Main Execution ---
 def main():
     """Sets up configuration, logs in, runs the balancer loop, and handles logout."""
-    print("Loading configuration...")
-    base_url = get_config_value('SC_HOST', DEFAULT_BASE_URL); base_url = base_url.rstrip('/')
-    if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
-    username = get_config_value('SC_USERNAME', DEFAULT_USERNAME); password = get_config_value('SC_PASSWORD', DEFAULT_PASSWORD)
-    verify_ssl = get_config_value('SC_VERIFY_SSL', DEFAULT_VERIFY_SSL, bool)
-    config = {
-        'DRY_RUN': get_config_value('SC_DRY_RUN', DEFAULT_DRY_RUN, bool),
-        'AVG_WINDOW_MINUTES': get_config_value('SC_AVG_WINDOW_MINUTES', DEFAULT_AVG_WINDOW_MINUTES, int),
-        'SAMPLE_INTERVAL_SECONDS': get_config_value('SC_SAMPLE_INTERVAL_SECONDS', DEFAULT_SAMPLE_INTERVAL_SECONDS, int),
-        'RAM_LIMIT_PERCENT': get_config_value('SC_RAM_LIMIT_PERCENT', DEFAULT_RAM_LIMIT_PERCENT, float),
-        'CPU_UPPER_THRESHOLD_PERCENT': get_config_value('SC_CPU_UPPER_THRESHOLD_PERCENT', DEFAULT_CPU_UPPER_THRESHOLD_PERCENT, float),
-        'CPU_LOWER_THRESHOLD_PERCENT': get_config_value('SC_CPU_LOWER_THRESHOLD_PERCENT', DEFAULT_CPU_LOWER_THRESHOLD_PERCENT, float),
-        'MIGRATION_COOLDOWN_MINUTES': get_config_value('SC_MIGRATION_COOLDOWN_MINUTES', DEFAULT_MIGRATION_COOLDOWN_MINUTES, int),
-        'VM_MOVE_COOLDOWN_MINUTES': get_config_value('SC_VM_MOVE_COOLDOWN_MINUTES', DEFAULT_VM_MOVE_COOLDOWN_MINUTES, int),
-        'RECOVERY_COOLDOWN_MINUTES': get_config_value('SC_RECOVERY_COOLDOWN_MINUTES', DEFAULT_RECOVERY_COOLDOWN_MINUTES, int),
-        'EXCLUDE_NODE_IPS': get_config_value('SC_EXCLUDE_NODE_IPS', DEFAULT_EXCLUDE_NODE_IPS, list)
+    # --- Read Config from ENV or Defaults ---
+    print("--- Loading Configuration ---")
+
+    # Define config mapping: ENV_VAR_NAME -> (DEFAULT_VALUE, TYPE)
+    config_map = {
+        'SC_HOST': (DEFAULT_BASE_URL, str),
+        'SC_USERNAME': (DEFAULT_USERNAME, str),
+        'SC_PASSWORD': (DEFAULT_PASSWORD, str),
+        'SC_VERIFY_SSL': (DEFAULT_VERIFY_SSL, bool),
+        'SC_DRY_RUN': (DEFAULT_DRY_RUN, bool),
+        'SC_AVG_WINDOW_MINUTES': (DEFAULT_AVG_WINDOW_MINUTES, int),
+        'SC_SAMPLE_INTERVAL_SECONDS': (DEFAULT_SAMPLE_INTERVAL_SECONDS, int),
+        'SC_RAM_LIMIT_PERCENT': (DEFAULT_RAM_LIMIT_PERCENT, float),
+        'SC_CPU_UPPER_THRESHOLD_PERCENT': (DEFAULT_CPU_UPPER_THRESHOLD_PERCENT, float),
+        'SC_CPU_LOWER_THRESHOLD_PERCENT': (DEFAULT_CPU_LOWER_THRESHOLD_PERCENT, float),
+        'SC_MIGRATION_COOLDOWN_MINUTES': (DEFAULT_MIGRATION_COOLDOWN_MINUTES, int),
+        'SC_VM_MOVE_COOLDOWN_MINUTES': (DEFAULT_VM_MOVE_COOLDOWN_MINUTES, int),
+        'SC_RECOVERY_COOLDOWN_MINUTES': (DEFAULT_RECOVERY_COOLDOWN_MINUTES, int),
+        'SC_EXCLUDE_NODE_IPS': (DEFAULT_EXCLUDE_NODE_IPS, list)
     }
-    client = HyperCoreApiClient(base_url, verify_ssl=verify_ssl); balancer = LoadBalancer(client, config)
+
+    # Store final config and track sources
+    final_config = {}
+    config_sources = {}
+
+    # Special handling for credentials
+    env_host = os.getenv('SC_HOST')
+    env_user = os.getenv('SC_USERNAME')
+    env_pass = os.getenv('SC_PASSWORD')
+    using_env_creds = bool(env_host and env_user and env_pass) # Check if all three are set
+
+    if using_env_creds:
+        print("Using Connection Credentials from ENV VARS.")
+        base_url = env_host.rstrip('/')
+        if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
+        username = env_user
+        password = env_pass
+        config_sources['SC_HOST'] = '(ENV)'
+        config_sources['SC_USERNAME'] = '(ENV)'
+        config_sources['SC_PASSWORD'] = '(ENV)'
+    else:
+        print("Using Connection Credentials from script defaults.")
+        base_url = DEFAULT_BASE_URL
+        username = DEFAULT_USERNAME
+        password = DEFAULT_PASSWORD
+        config_sources['SC_HOST'] = '(Default)'
+        config_sources['SC_USERNAME'] = '(Default)'
+        config_sources['SC_PASSWORD'] = '(Default)'
+
+    # Process other config items
+    for env_var, (default, expected_type) in config_map.items():
+        # Skip credential vars already handled
+        if env_var in ['SC_HOST', 'SC_USERNAME', 'SC_PASSWORD']:
+            continue
+
+        value = get_config_value(env_var, default, expected_type)
+        final_config[env_var.replace('SC_', '')] = value # Store with cleaner key for LoadBalancer class
+        config_sources[env_var] = '(ENV)' if os.getenv(env_var) is not None else '(Default)'
+
+    # Handle VERIFY_SSL specifically for the source tracking
+    final_config['VERIFY_SSL'] = get_config_value('SC_VERIFY_SSL', DEFAULT_VERIFY_SSL, bool)
+    config_sources['SC_VERIFY_SSL'] = '(ENV)' if os.getenv('SC_VERIFY_SSL') is not None else '(Default)'
+
+    # --- Print Configuration Summary ---
+    print("\n--- Configuration Settings ---")
+    print(f"{'Parameter':<30} {'Value':<40} {'Source'}")
+    print("-" * 75)
+    # Print Credentials separately for clarity
+    print(f"{'SC_HOST':<30} {base_url:<40} {config_sources['SC_HOST']}")
+    print(f"{'SC_USERNAME':<30} {username:<40} {config_sources['SC_USERNAME']}")
+    print(f"{'SC_PASSWORD':<30} {'******':<40} {config_sources['SC_PASSWORD']}") # Mask password
+    print(f"{'SC_VERIFY_SSL':<30} {str(final_config['VERIFY_SSL']):<40} {config_sources['SC_VERIFY_SSL']}")
+
+    # Print Tunables
+    for env_var, (default, _) in config_map.items():
+         if env_var not in ['SC_HOST', 'SC_USERNAME', 'SC_PASSWORD', 'SC_VERIFY_SSL']:
+             key_for_final = env_var.replace('SC_', '')
+             print(f"{env_var:<30} {str(final_config[key_for_final]):<40} {config_sources[env_var]}")
+    print("-" * 75)
+    # --- End Configuration Summary ---
+
+
+    # --- Initialize and Login ---
+    client = HyperCoreApiClient(base_url, verify_ssl=final_config['VERIFY_SSL'])
+    # Pass the keys without SC_ prefix to LoadBalancer
+    balancer_config = {k.replace('SC_', ''): v for k, v in final_config.items()}
+    balancer = LoadBalancer(client, balancer_config)
     if not client.login(username, password): sys.exit(1)
+
+    # --- Run Balancer ---
     try: balancer.run()
     except KeyboardInterrupt: print("\nCaught interrupt (Ctrl+C), stopping...")
     except Exception as e: print(f"\nFATAL ERROR during execution: {e}")
