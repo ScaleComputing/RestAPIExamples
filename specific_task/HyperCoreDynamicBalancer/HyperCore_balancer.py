@@ -52,6 +52,7 @@ import sys
 from collections import deque
 from statistics import mean
 import os
+import traceback # Added for detailed error logging
 
 # --- Configuration (Defaults - Can be overridden by ENV VARS) ---
 
@@ -115,54 +116,127 @@ def get_config_value(env_var_name, default_value, expected_type=str):
 class HyperCoreApiClient:
     """A simple client for interacting with the Scale Computing HyperCore REST API."""
 
-    def __init__(self, base_url, verify_ssl=True):
+    def __init__(self, base_url, username, password, verify_ssl=True):
         self.base_url = base_url.rstrip('/')
+        self.base_host = '/'.join(self.base_url.split('/')[:3])
+        self.primary_host_address = self.base_host.split('//')[-1]
         self.session = requests.Session()
         self.session.verify = verify_ssl
-        # Suppress warnings if SSL verification is disabled
+        self.username = username
+        self.password = password
+        self.logged_in = False
+
         if not verify_ssl:
             try:
                 from urllib3.exceptions import InsecureRequestWarning
                 warnings.simplefilter('ignore', InsecureRequestWarning)
             except ImportError: pass
 
-    def login(self, username, password):
+    def login(self, username=None, password=None):
+        user = username if username is not None else self.username
+        pw = password if password is not None else self.password
+        if not user or not pw: print("Login failed: Credentials missing."); return False
+        if username is not None: self.username = username
+        if password is not None: self.password = password
+        login_url = f"{self.base_url}/login"
+        credentials = {"username": user, "password": pw}
         try:
-            response = self.session.post(f"{self.base_url}/login", json={"username": username, "password": password}, timeout=10)
-            response.raise_for_status(); print("Successfully logged in."); return True
-        except requests.exceptions.RequestException as e: print(f"Login failed: {e}"); return False
+            self.session.cookies.clear()
+            response = self.session.post(login_url, json=credentials, timeout=10)
+            response.raise_for_status(); print("Successfully logged in."); self.logged_in = True; return True
+        except requests.exceptions.RequestException as e: print(f"Login failed: {e}"); self.logged_in = False; return False
 
     def logout(self):
-        try: self.session.post(f"{self.base_url}/logout", timeout=5); print("Successfully logged out.")
-        except requests.exceptions.RequestException: pass
+        if self.logged_in:
+            try: self.session.post(f"{self.base_url}/logout", timeout=5); print("Successfully logged out.")
+            except requests.exceptions.RequestException: pass
+            finally: self.logged_in = False
 
-    def _request(self, method, endpoint, **kwargs):
-        url = f"{self.base_url}{endpoint}"
+    def _request(self, method, endpoint, base_override=None, is_retry=False, **kwargs):
+        effective_base = base_override if base_override else self.base_url
+        url = f"{effective_base}{endpoint}"
         try:
-            response = self.session.request(method, url, timeout=15, **kwargs)
+            timeout = kwargs.pop('timeout', 15)
+            response = self.session.request(method, url, timeout=timeout, **kwargs)
             response.raise_for_status()
             if response.status_code == 204 or not response.content: return {}
             return response.json()
-        except requests.exceptions.RequestException as e: print(f"API Error ({method} {endpoint}): {e}"); raise
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401 and not is_retry:
+                print("WARN: Received 401 Unauthorized. Attempting re-login..."); self.logged_in = False
+                if self.login():
+                    print("Re-login successful. Retrying original request...")
+                    kwargs['is_retry'] = True
+                    return self._request(method, endpoint, base_override=base_override, **kwargs)
+                else: print("ERROR: Re-login failed."); raise e
+            else: target_display = (base_override or self.base_url).split('/')[2]; print(f"API Error ({method} {endpoint} on {target_display}): {e}"); raise e
+        except requests.exceptions.RequestException as e: target_display = (base_override or self.base_url).split('/')[2]; print(f"API Error ({method} {endpoint} on {target_display}): {e}"); raise e
 
-    def _get(self, endpoint): return self._request('get', endpoint)
+    def _get(self, endpoint, base_override=None): return self._request('get', endpoint, base_override=base_override)
     def _post(self, endpoint, data): return self._request('post', endpoint, json=data)
     def _patch(self, endpoint, data): return self._request('patch', endpoint, json=data)
 
-    def get_nodes(self): return self._get("/Node")
+    def get_nodes(self, base_override=None): return self._get("/Node", base_override=base_override)
     def get_vms(self): return self._get("/VirDomain")
     def get_vm_stats(self): return self._get("/VirDomainStats")
     def get_task_status(self, task_tag):
-        try:
-            status_list = self._get(f"/TaskTag/{task_tag}")
-            return status_list[0]['state'] if status_list else "UNKNOWN"
+        try: status_list = self._request('get', f"/TaskTag/{task_tag}"); return status_list[0]['state'] if status_list else "UNKNOWN"
         except requests.exceptions.RequestException as e: print(f"  - Warn: Task status check fail {task_tag}: {e}"); return "UNKNOWN"
 
     def migrate_vm(self, vm_uuid, target_node_uuid):
-        action = [{"virDomainUUID": vm_uuid, "actionType": "LIVEMIGRATE", "nodeUUID": target_node_uuid}]
-        return self._post("/VirDomain/action", action)
+        action = [{"virDomainUUID": vm_uuid, "actionType": "LIVEMIGRATE", "nodeUUID": target_node_uuid}]; return self._post("/VirDomain/action", action)
 
-    # clear_vm_affinity method removed
+    def is_update_active(self, all_nodes):
+        """
+        Checks if a cluster update is active using /update/update_status.json endpoint.
+        Uses the provided node list to determine check order and fallbacks.
+        Handles potential 401 by retrying internally via _request for node list check.
+        """
+        nodes_to_check = []; other_node_ips = []; primary_check_failed = False; primary_node_details = None
+        if not all_nodes: print("  - WARN: No node list for update check. Only trying primary."); nodes_to_check = [self.primary_host_address]
+        else:
+            primary_node_details = next((n for n in all_nodes if n.get('lanIP') == self.primary_host_address), None)
+            other_node_ips = [node.get('lanIP') for node in all_nodes if node.get('lanIP') and node.get('networkStatus') == 'ONLINE' and node.get('lanIP') != self.primary_host_address]
+            if self.primary_host_address not in nodes_to_check: nodes_to_check.append(self.primary_host_address)
+            nodes_to_check.extend(other_node_ips); nodes_to_check = list(dict.fromkeys(nodes_to_check))
+
+        print(f"  - Checking update status on nodes (order: {', '.join(nodes_to_check)})...")
+        for node_ip in nodes_to_check:
+            is_primary = (node_ip == self.primary_host_address); scheme = self.base_host.split('://')[0]; status_url = f"{scheme}://{node_ip}/update/update_status.json"
+            try:
+                response = self.session.get(status_url, timeout=5, verify=self.session.verify); response.raise_for_status(); status_data = response.json()
+                prepare_state = status_data.get('prepareStatus', {}).get('state')
+                if prepare_state and prepare_state != "COMPLETE": print(f"  - Update Status: Prepare state '{prepare_state}' from {node_ip}."); return True
+                master_state = status_data.get('updateStatus', {}).get('masterState')
+                if master_state and master_state != "COMPLETE": print(f"  - Update Status: Update state '{master_state}' from {node_ip}."); return True
+                else:
+                    print(f"  - Update Status: Prepare='{prepare_state or 'N/A'}', Update='{master_state or 'N/A'}' on {node_ip}. Not active.")
+                    if not is_primary and primary_check_failed:
+                        if not primary_node_details and all_nodes: primary_node_details = next((n for n in all_nodes if n.get('lanIP') == self.primary_host_address), None)
+                        if primary_node_details:
+                            print(f"  - Double-checking primary ({self.primary_host_address}) status via secondary ({node_ip})...")
+                            secondary_api_base = f"{scheme}://{node_ip}/rest/v1"
+                            try:
+                                nodes_from_secondary = self.get_nodes(base_override=secondary_api_base) # Uses _request with re-login
+                                primary_status = "UNKNOWN (Not in list)"; primary_uuid = primary_node_details.get('uuid')
+                                if primary_uuid:
+                                    for node in nodes_from_secondary:
+                                        if node.get('uuid') == primary_uuid: primary_status = node.get('networkStatus', 'UNKNOWN'); break
+                                print(f"  - Secondary {node_ip} reports primary node status: {primary_status}")
+                            except requests.exceptions.RequestException as e_check: print(f"  - WARN: Failed double-check via {node_ip}: {e_check}")
+                        else: print(f"  - Info: Cannot double-check primary (details unavailable).")
+                    return False # No active update/prepare
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                print(f"  - Info: Node {node_ip} unreachable for update check.")
+                if is_primary: primary_check_failed = True
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                print(f"  - WARN: Failed get/parse update status from {node_ip}: {e}")
+                if is_primary: primary_check_failed = True # Indentation Fixed
+            except Exception as e:
+                 print(f"  - WARN: Unexpected error checking update status on {node_ip}: {e}")
+                 if is_primary: primary_check_failed = True # Indentation Fixed
+
+        print(f"  - WARN: Cannot determine update status from any node ({', '.join(nodes_to_check)}). Assuming active (fail-safe)."); return True
 
 
 # --- Load Balancer Class ---
@@ -174,14 +248,13 @@ class LoadBalancer:
         self.config = config
         self.exclude_ips_set = set(config.get('EXCLUDE_NODE_IPS', []))
         if self.exclude_ips_set: print(f"INFO: Excluding nodes with IPs: {', '.join(self.exclude_ips_set)}")
-
         self.max_history_size = int((config['AVG_WINDOW_MINUTES'] * 60) / config['SAMPLE_INTERVAL_SECONDS'])
         if self.max_history_size < 1: print("FATAL: AVG_WINDOW_MINUTES must be >= SAMPLE_INTERVAL_SECONDS."); sys.exit(1)
         print(f"History window: {self.max_history_size} samples (~{config['AVG_WINDOW_MINUTES']} min).")
-
         self.node_cpu_history = {}; self.vm_cpu_history = {}
         self.last_migration_time = 0; self.active_migration_task = None
         self.vm_last_moved_times = {}; self.cluster_was_unstable = False; self.recovery_start_time = 0
+        self.last_known_nodes = []
 
     def collect_data(self):
         print("Collecting cluster data...")
@@ -206,18 +279,10 @@ class LoadBalancer:
         for node in nodes:
             node_uuid = node.get('uuid'); node_ip = node.get('lanIP', node_uuid)
             if not node_uuid: continue
-
             node_status = node.get('networkStatus'); supports_virt = node.get('supportsVirtualization', True); virt_online = node.get('virtualizationOnline', True)
             is_excluded = node.get('lanIP') in self.exclude_ips_set
             is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded and supports_virt and virt_online
-
-            exclude_reason = ""
-            if is_excluded: exclude_reason = "Manually Excluded"
-            elif node_status != 'ONLINE': exclude_reason = "Offline"
-            elif not node.get('allowRunningVMs', False): exclude_reason = "VMs Disallowed"
-            elif not supports_virt: exclude_reason = "No Virtualization Support"
-            elif not virt_online: exclude_reason = "Virtualization Offline"
-
+            exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not node.get('allowRunningVMs') else ("No Virtualization Support" if not supports_virt else ("Virtualization Offline" if not virt_online else ""))))
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
             if is_usable:
@@ -464,7 +529,7 @@ class LoadBalancer:
         busiest = sorted_nodes[-1]; targets = sorted_nodes[:-1]; coolest = targets[0]
 
         if not (busiest['avg_cpu'] > self.config['CPU_UPPER_THRESHOLD_PERCENT'] and coolest['avg_cpu'] < self.config['CPU_LOWER_THRESHOLD_PERCENT']):
-             if coolest: print(f"  - No imbalance detected based on thresholds ({self.config['CPU_UPPER_THRESHOLD_PERCENT']}% / {self.config['CPU_LOWER_THRESHOLD_PERCENT']}%). Busiest: {busiest['avg_cpu']:.1f}%, Coolest: {coolest['avg_cpu']:.1f}%")
+             if coolest: print(f"  - No imbalance based on thresholds ({self.config['CPU_UPPER_THRESHOLD_PERCENT']}%/{self.config['CPU_LOWER_THRESHOLD_PERCENT']}%). Busiest: {busiest['avg_cpu']:.1f}%, Coolest: {coolest['avg_cpu']:.1f}%")
              return None, None, None # Not imbalanced enough or only one usable node
 
         print(f"Imbalance detected: Node {busiest['name']} (avg {busiest['avg_cpu']:.1f}%) hot; Node {coolest['name']} (avg {coolest['avg_cpu']:.1f}%) cool.")
@@ -529,52 +594,78 @@ class LoadBalancer:
                 time_since_move=time.time()-self.last_migration_time; cluster_cd=self.config['MIGRATION_COOLDOWN_MINUTES']*60
                 if time_since_move < cluster_cd: print(f"In cluster cooldown. Wait {cluster_cd-time_since_move:.0f}s."); time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
-                # --- 4. Collect Data ---
-                nodes, vms, vm_stats = self.collect_data()
-                if not all([nodes, vms, vm_stats]): time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
+                # --- 4. Collect Data (and potentially update last known nodes) ---
+                print("Collecting cluster data...")
+                nodes_data, vms_data, vm_stats_data = self.collect_data()
 
-                # --- 5. Check OFFLINE Nodes & Manage Recovery ---
-                offline_nodes = [n for n in nodes if n.get('networkStatus') == 'OFFLINE']
+                current_nodes_list = [] # List to use for subsequent checks
+                if nodes_data is not None:
+                     self.last_known_nodes = nodes_data # Update if successful
+                     current_nodes_list = nodes_data
+                     if time.time() - self.last_migration_time > 1 : # Avoid printing right after migration
+                         print(f"  - Successfully collected data for {len(nodes_data)} nodes.")
+                elif self.last_known_nodes:
+                     print("  - WARN: Failed collect node data. Using last known list for checks.")
+                     current_nodes_list = self.last_known_nodes # Use last known list
+                else:
+                     print("  - ERROR: Failed collect node data & no previous list. Cannot proceed.")
+                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2); continue # Wait longer and retry
+
+                if vms_data is None or vm_stats_data is None:
+                    print("  - ERROR: Failed collect VM/Stats data. Cannot proceed this cycle.")
+                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
+
+                # --- 5. Check for Active Cluster Update (using current or last known nodes) ---
+                print("Checking cluster update status...")
+                if self.client.is_update_active(current_nodes_list): # Pass the potentially stale list
+                    print("  - Cluster update active or status unknown. Pausing balancing operations.")
+                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2); continue
+                else:
+                    print("  - No active cluster update detected.")
+
+                # --- 6. Check OFFLINE Nodes & Manage Recovery ---
+                # Use the 'current_nodes_list' which is either fresh or last known good
+                offline_nodes = [n for n in current_nodes_list if n.get('networkStatus') == 'OFFLINE']
                 if offline_nodes:
-                    if not self.cluster_was_unstable: # First detection
+                    if not self.cluster_was_unstable:
                         offline_names = [n.get('lanIP', n.get('uuid')) for n in offline_nodes]
                         print("!"*30 + f"\n  WARNING: Node(s) {offline_names} OFFLINE. Pausing.\n  Checking violations (warnings only):")
-                        self.check_and_warn_node_affinity_violations(vms, nodes)
-                        self.check_and_warn_anti_affinity_violations(vms)
+                        self.check_and_warn_node_affinity_violations(vms_data if vms_data is not None else [], current_nodes_list) # Pass current lists
+                        self.check_and_warn_anti_affinity_violations(vms_data if vms_data is not None else []) # Pass current VMs
                         print("!"*30)
-                    self.cluster_was_unstable = True # Set flag
-                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue # Pause
-                elif self.cluster_was_unstable: # Recovered
-                    print("*"*30 + "\n  INFO: All nodes back ONLINE. Starting RECOVERY cooldown.\n" + "*"*30)
-                    self.cluster_was_unstable = False # Clear flag
-                    self.recovery_start_time = time.time() # Start recovery timer
-                    time.sleep(1); continue # Re-check cooldown
+                    self.cluster_was_unstable = True
+                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
+                elif self.cluster_was_unstable:
+                    print("*"*30 + "\n  INFO: All nodes previously OFFLINE now appear ONLINE. Starting RECOVERY cooldown.\n" + "*"*30)
+                    self.cluster_was_unstable = False
+                    self.recovery_start_time = time.time()
+                    time.sleep(1); continue
 
-                # --- 6. Update History ---
-                self.update_history(nodes, vms, vm_stats)
+                # --- 7. Update History (Only if data collection was fully successful this cycle) ---
+                self.update_history(nodes_data, vms_data, vm_stats_data)
 
-                # --- 7. Analyze Cluster State ---
-                cluster_state = self.get_cluster_state(nodes, vms)
+                # --- 8. Analyze Cluster State (Use fresh data) ---
+                cluster_state = self.get_cluster_state(nodes_data, vms_data)
 
-                # --- 8. Fix Node Affinity (P1) ---
-                if self.find_and_fix_node_affinity_violation(cluster_state, vms, nodes):
+                # --- 9. Fix Node Affinity (P1 - Use fresh data) ---
+                if self.find_and_fix_node_affinity_violation(cluster_state, vms_data, nodes_data):
                      print("Node affinity fix initiated. Next cycle."); time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
-                # --- 9. Fix Anti-Affinity (P2) ---
-                if self.find_and_fix_anti_affinity_violation(cluster_state, vms, nodes):
+                # --- 10. Fix Anti-Affinity (P2 - Use fresh data) ---
+                if self.find_and_fix_anti_affinity_violation(cluster_state, vms_data, nodes_data):
                     print("Anti-affinity fix initiated. Next cycle."); time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
-                # --- 10. Check History Full for Load Balancing ---
+                # --- 11. Check History Full for Load Balancing ---
                 first_hist = next((h for h in self.node_cpu_history.values() if h is not None), None)
                 if not first_hist or len(first_hist) < self.max_history_size:
                     print(f"Collecting history {len(first_hist or [])}/{self.max_history_size} samples."); time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
                 print("History full. Analyzing for load balancing...")
 
-                # --- 11. Find Load Balancing Candidates (P3) ---
-                vm_move_info, src_node_state, target_node_state = self.find_migration_candidate(cluster_state, vms, nodes)
+                # --- 12. Find Load Balancing Candidates (P3 - Use fresh data) ---
+                vm_move_info, src_node_state, target_node_state = self.find_migration_candidate(cluster_state, vms_data, nodes_data)
 
-                # --- 12. Perform Load Balancing Migration ---
+                # --- 13. Perform Load Balancing Migration ---
                 if vm_move_info and src_node_state and target_node_state:
                     vm_uuid = vm_move_info['uuid']; vm_name = vm_move_info['name']
                     if self.config['DRY_RUN']:
@@ -591,13 +682,12 @@ class LoadBalancer:
                         except requests.exceptions.RequestException: print(f"  Failed."); self.last_migration_time = time.time()
                 else: print("Cluster balanced or no valid LB move found.")
 
-                # --- 13. Wait ---
+                # --- 14. Wait ---
                 print(f"Waiting {self.config['SAMPLE_INTERVAL_SECONDS']} seconds.")
                 time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'])
 
             except Exception as e: # Catch unexpected errors within the loop
                  print(f"\n!!! UNEXPECTED ERROR IN CYCLE: {e} !!!")
-                 import traceback
                  traceback.print_exc() # Print full traceback for debugging
                  print("Attempting to continue after delay...")
                  time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2) # Longer delay
@@ -607,97 +697,56 @@ def main():
     """Sets up configuration, logs in, runs the balancer loop, and handles logout."""
     # --- Read Config from ENV or Defaults ---
     print("--- Loading Configuration ---")
-
-    # Define config mapping: ENV_VAR_NAME -> (DEFAULT_VALUE, TYPE)
     config_map = {
-        'SC_HOST': (DEFAULT_BASE_URL, str),
-        'SC_USERNAME': (DEFAULT_USERNAME, str),
-        'SC_PASSWORD': (DEFAULT_PASSWORD, str),
-        'SC_VERIFY_SSL': (DEFAULT_VERIFY_SSL, bool),
-        'SC_DRY_RUN': (DEFAULT_DRY_RUN, bool),
-        'SC_AVG_WINDOW_MINUTES': (DEFAULT_AVG_WINDOW_MINUTES, int),
-        'SC_SAMPLE_INTERVAL_SECONDS': (DEFAULT_SAMPLE_INTERVAL_SECONDS, int),
-        'SC_RAM_LIMIT_PERCENT': (DEFAULT_RAM_LIMIT_PERCENT, float),
-        'SC_CPU_UPPER_THRESHOLD_PERCENT': (DEFAULT_CPU_UPPER_THRESHOLD_PERCENT, float),
-        'SC_CPU_LOWER_THRESHOLD_PERCENT': (DEFAULT_CPU_LOWER_THRESHOLD_PERCENT, float),
-        'SC_MIGRATION_COOLDOWN_MINUTES': (DEFAULT_MIGRATION_COOLDOWN_MINUTES, int),
-        'SC_VM_MOVE_COOLDOWN_MINUTES': (DEFAULT_VM_MOVE_COOLDOWN_MINUTES, int),
-        'SC_RECOVERY_COOLDOWN_MINUTES': (DEFAULT_RECOVERY_COOLDOWN_MINUTES, int),
-        'SC_EXCLUDE_NODE_IPS': (DEFAULT_EXCLUDE_NODE_IPS, list)
+        'SC_HOST': (DEFAULT_BASE_URL, str), 'SC_USERNAME': (DEFAULT_USERNAME, str),
+        'SC_PASSWORD': (DEFAULT_PASSWORD, str), 'SC_VERIFY_SSL': (DEFAULT_VERIFY_SSL, bool),
+        'SC_DRY_RUN': (DEFAULT_DRY_RUN, bool), 'SC_AVG_WINDOW_MINUTES': (DEFAULT_AVG_WINDOW_MINUTES, int),
+        'SC_SAMPLE_INTERVAL_SECONDS': (DEFAULT_SAMPLE_INTERVAL_SECONDS, int), 'SC_RAM_LIMIT_PERCENT': (DEFAULT_RAM_LIMIT_PERCENT, float),
+        'SC_CPU_UPPER_THRESHOLD_PERCENT': (DEFAULT_CPU_UPPER_THRESHOLD_PERCENT, float), 'SC_CPU_LOWER_THRESHOLD_PERCENT': (DEFAULT_CPU_LOWER_THRESHOLD_PERCENT, float),
+        'SC_MIGRATION_COOLDOWN_MINUTES': (DEFAULT_MIGRATION_COOLDOWN_MINUTES, int), 'SC_VM_MOVE_COOLDOWN_MINUTES': (DEFAULT_VM_MOVE_COOLDOWN_MINUTES, int),
+        'SC_RECOVERY_COOLDOWN_MINUTES': (DEFAULT_RECOVERY_COOLDOWN_MINUTES, int), 'SC_EXCLUDE_NODE_IPS': (DEFAULT_EXCLUDE_NODE_IPS, list)
     }
-
-    # Store final config and track sources
-    final_config = {}
-    config_sources = {}
-
-    # Special handling for credentials
-    env_host = os.getenv('SC_HOST')
-    env_user = os.getenv('SC_USERNAME')
-    env_pass = os.getenv('SC_PASSWORD')
-    using_env_creds = bool(env_host and env_user and env_pass) # Check if all three are set
-
+    final_config = {}; config_sources = {}
+    env_host = os.getenv('SC_HOST'); env_user = os.getenv('SC_USERNAME'); env_pass = os.getenv('SC_PASSWORD')
+    using_env_creds = bool(env_host and env_user and env_pass)
     if using_env_creds:
         print("Using Connection Credentials from ENV VARS.")
-        base_url = env_host.rstrip('/')
+        base_url = env_host.rstrip('/'); username = env_user; password = env_pass
         if not base_url.endswith('/rest/v1'): base_url += '/rest/v1'
-        username = env_user
-        password = env_pass
-        config_sources['SC_HOST'] = '(ENV)'
-        config_sources['SC_USERNAME'] = '(ENV)'
-        config_sources['SC_PASSWORD'] = '(ENV)'
+        config_sources['SC_HOST'] = '(ENV)'; config_sources['SC_USERNAME'] = '(ENV)'; config_sources['SC_PASSWORD'] = '(ENV)'
     else:
         print("Using Connection Credentials from script defaults.")
-        base_url = DEFAULT_BASE_URL
-        username = DEFAULT_USERNAME
-        password = DEFAULT_PASSWORD
-        config_sources['SC_HOST'] = '(Default)'
-        config_sources['SC_USERNAME'] = '(Default)'
-        config_sources['SC_PASSWORD'] = '(Default)'
+        base_url = DEFAULT_BASE_URL; username = DEFAULT_USERNAME; password = DEFAULT_PASSWORD
+        config_sources['SC_HOST'] = '(Default)'; config_sources['SC_USERNAME'] = '(Default)'; config_sources['SC_PASSWORD'] = '(Default)'
 
-    # Process other config items
     for env_var, (default, expected_type) in config_map.items():
-        # Skip credential vars already handled
-        if env_var in ['SC_HOST', 'SC_USERNAME', 'SC_PASSWORD']:
-            continue
-
-        value = get_config_value(env_var, default, expected_type)
-        final_config[env_var.replace('SC_', '')] = value # Store with cleaner key for LoadBalancer class
+        if env_var in ['SC_HOST', 'SC_USERNAME', 'SC_PASSWORD']: continue
+        value = get_config_value(env_var, default, expected_type); final_config[env_var.replace('SC_', '')] = value
         config_sources[env_var] = '(ENV)' if os.getenv(env_var) is not None else '(Default)'
-
-    # Handle VERIFY_SSL specifically for the source tracking
     final_config['VERIFY_SSL'] = get_config_value('SC_VERIFY_SSL', DEFAULT_VERIFY_SSL, bool)
     config_sources['SC_VERIFY_SSL'] = '(ENV)' if os.getenv('SC_VERIFY_SSL') is not None else '(Default)'
 
     # --- Print Configuration Summary ---
     print("\n--- Configuration Settings ---")
-    print(f"{'Parameter':<30} {'Value':<40} {'Source'}")
-    print("-" * 75)
-    # Print Credentials separately for clarity
+    print(f"{'Parameter':<30} {'Value':<40} {'Source'}"); print("-" * 75)
     print(f"{'SC_HOST':<30} {base_url:<40} {config_sources['SC_HOST']}")
     print(f"{'SC_USERNAME':<30} {username:<40} {config_sources['SC_USERNAME']}")
-    print(f"{'SC_PASSWORD':<30} {'******':<40} {config_sources['SC_PASSWORD']}") # Mask password
+    print(f"{'SC_PASSWORD':<30} {'******':<40} {config_sources['SC_PASSWORD']}")
     print(f"{'SC_VERIFY_SSL':<30} {str(final_config['VERIFY_SSL']):<40} {config_sources['SC_VERIFY_SSL']}")
-
-    # Print Tunables
     for env_var, (default, _) in config_map.items():
          if env_var not in ['SC_HOST', 'SC_USERNAME', 'SC_PASSWORD', 'SC_VERIFY_SSL']:
-             key_for_final = env_var.replace('SC_', '')
-             print(f"{env_var:<30} {str(final_config[key_for_final]):<40} {config_sources[env_var]}")
+             key_for_final = env_var.replace('SC_', ''); print(f"{env_var:<30} {str(final_config[key_for_final]):<40} {config_sources[env_var]}")
     print("-" * 75)
-    # --- End Configuration Summary ---
-
-
+    
     # --- Initialize and Login ---
-    client = HyperCoreApiClient(base_url, verify_ssl=final_config['VERIFY_SSL'])
-    # Pass the keys without SC_ prefix to LoadBalancer
-    balancer_config = {k.replace('SC_', ''): v for k, v in final_config.items()}
-    balancer = LoadBalancer(client, balancer_config)
-    if not client.login(username, password): sys.exit(1)
+    client = HyperCoreApiClient(base_url, username, password, verify_ssl=final_config['VERIFY_SSL']); # Pass creds for re-login
+    balancer = LoadBalancer(client, final_config) # Pass final_config directly
+    if not client.login(): sys.exit(1) # Initial login using stored creds
 
     # --- Run Balancer ---
     try: balancer.run()
     except KeyboardInterrupt: print("\nCaught interrupt (Ctrl+C), stopping...")
-    except Exception as e: print(f"\nFATAL ERROR during execution: {e}")
+    except Exception as e: print(f"\nFATAL ERROR during execution: {e}"); traceback.print_exc() # Print traceback on fatal error
     finally: client.logout(); print("Script terminated.")
 
 if __name__ == "__main__":
