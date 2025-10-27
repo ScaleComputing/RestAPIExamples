@@ -1,0 +1,447 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 4b1ecf81a02a4f04b82a91d650499d4b # Standard UUID for Templates/Applications
+      name: Templates/Applications
+  templates:
+    - uuid: f68fd423a81e4d3e8aa04f3a9bad61fe # Placeholder UUID - Regenerate locally
+      template: Template Scale Computing HyperCore API # Technical Name
+      name: Scale Computing HyperCore by HTTP # User-friendly Name
+      description: |-
+        Monitors Scale Computing HyperCore infrastructure (Nodes, VMs, Drives) via its REST API.
+
+        Setup:
+        1. Link this template to the host representing the HyperCore cluster.
+        2. Set host macros for API access ({$API_URL}, {$API_USER}, {$API_PASS}).
+      groups:
+        - name: Templates/Applications
+      macros:
+        - macro: '{$API_URL}'
+          description: Base URL of the HyperCore API (e.g., https://your-cluster-ip)
+        - macro: '{$API_USER}'
+          description: Username for API Basic Authentication
+        - macro: '{$API_PASS}'
+          type: SECRET_TEXT
+          description: Password for API Basic Authentication
+      items:
+        - uuid: 84feac7ac823493d825e64f48edd6812
+          name: 'HyperCore API: Get All Nodes'
+          type: HTTP_AGENT
+          key: hypercore.api.get[nodes]
+          delay: 1m
+          history: 1h
+          trends: '0'
+          value_type: TEXT
+          url: '{$API_URL}/rest/v1/Node'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          status: ENABLED
+          description: Master item retrieving all node information and statistics.
+        - uuid: 9cb100fb52d4477b80b2b25b26545509
+          name: 'HyperCore API: Get All VMs'
+          type: HTTP_AGENT
+          key: hypercore.api.get[vms]
+          delay: 5m
+          history: 1h
+          trends: '0'
+          value_type: TEXT
+          url: '{$API_URL}/rest/v1/VirDomain'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          status: ENABLED
+          description: Master item retrieving all VM configuration data.
+        - uuid: efb3953074c3406ca0cf740ea03457f3
+          name: 'HyperCore API: Get All VM Stats'
+          type: HTTP_AGENT
+          key: hypercore.api.get[vmstats]
+          delay: 1m
+          history: 1h
+          trends: '0'
+          value_type: TEXT
+          url: '{$API_URL}/rest/v1/VirDomainStats'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          status: ENABLED
+          description: Master item retrieving all VM performance metrics.
+        - uuid: bbafb36a8b944fb38688373ee79b5e80
+          name: 'HyperCore API: Get All Drives'
+          type: HTTP_AGENT
+          key: hypercore.api.get[drives]
+          delay: 5m
+          history: 1h
+          trends: '0'
+          value_type: TEXT
+          url: '{$API_URL}/rest/v1/Drive'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          status: ENABLED
+          description: Master item retrieving all physical drive status data.
+      discovery_rules:
+        - uuid: 053a6dca55824fdd82f6a751c9b5bdad
+          name: Node Discovery
+          type: DEPENDENT
+          key: hypercore.nodes.discovery
+          delay: '0'
+          master_item:
+            key: hypercore.api.get[nodes]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+          lld_macro_paths:
+            - lld_macro: '{#NODE_ID}'
+              path: $.uuid
+            - lld_macro: '{#NODE_NAME}'
+              path: $.lanIP # Using LAN IP as Node Name, change path if another field is better
+          item_prototypes:
+            - uuid: a02204864d3c4f4b86e6bbd0bf1bf1a9
+              name: 'Node {#NODE_NAME}: CPU Usage'
+              type: DEPENDENT
+              key: hypercore.node.cpu_usage[{#NODE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: '%'
+              master_item:
+                key: hypercore.api.get[nodes]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#NODE_ID}')].cpuUsage.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: c46df85e825d4302a109e99072b08ad1
+              name: 'Node {#NODE_NAME}: Memory Usage (%)'
+              type: DEPENDENT
+              key: hypercore.node.mem_usage_pct[{#NODE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: '%'
+              master_item:
+                key: hypercore.api.get[nodes]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#NODE_ID}')].memUsagePercentage.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: 36f75e5b606446eeb296a2b0eee20b4a
+              name: 'Node {#NODE_NAME}: Network Status'
+              type: DEPENDENT
+              key: hypercore.node.network_status[{#NODE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: CHAR
+              master_item:
+                key: hypercore.api.get[nodes]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#NODE_ID}')].networkStatus.first()" # FIX: Added .first()
+                  error_handler: DISCARD_VALUE
+            - uuid: 6e81f4e7ead843ef84a5a231192eb1ea
+              name: 'Node {#NODE_NAME}: Disposition'
+              type: DEPENDENT
+              key: hypercore.node.disposition[{#NODE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: CHAR
+              master_item:
+                key: hypercore.api.get[nodes]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#NODE_ID}')].currentDisposition.first()" # FIX: Added .first()
+                  error_handler: DISCARD_VALUE
+          trigger_prototypes:
+            - uuid: c80f2f1128ed431cb9ba9758b68162e6
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.node.network_status[{#NODE_ID}])<>"ONLINE"'
+              name: 'Node {#NODE_NAME} is offline'
+              priority: HIGH
+              description: The network status for node {#NODE_NAME} is not 'ONLINE'.
+            - uuid: 87e3116b4afe424187e158ed1d1f089b
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.node.disposition[{#NODE_ID}])<>"IN"'
+              name: "Node {#NODE_NAME} has unusual status (not 'IN')"
+              priority: WARNING
+              description: Node {#NODE_NAME} disposition is {ITEM.VALUE} (not 'IN'). This might indicate maintenance or evacuation.
+            - uuid: c4e8bd7a82474680b3912074a55abefc
+              expression: 'avg(/Template Scale Computing HyperCore API/hypercore.node.cpu_usage[{#NODE_ID}],5m)>90'
+              name: 'Node {#NODE_NAME} CPU utilization is high'
+              priority: WARNING
+              description: Average CPU usage on node {#NODE_ID}] exceeded 90% for 5 minutes.
+            - uuid: d29ec4afdd18493098f3c8bea7b146a5
+              expression: 'avg(/Template Scale Computing HyperCore API/hypercore.node.mem_usage_pct[{#NODE_ID}],5m)>90'
+              name: 'Node {#NODE_NAME} memory utilization is high'
+              priority: WARNING
+              description: Average memory usage on node {#NODE_ID} exceeded 90% for 5 minutes.
+        - uuid: 37d39874c311448fa058f881b3b66c16
+          name: VM Discovery
+          type: DEPENDENT
+          key: hypercore.vms.discovery
+          delay: '0'
+          master_item:
+            key: hypercore.api.get[vms]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+          lld_macro_paths:
+            - lld_macro: '{#VM_ID}'
+              path: $.uuid
+            - lld_macro: '{#VM_NAME}'
+              path: $.name
+          item_prototypes:
+            - uuid: 7fd5a01b4a7d4c27b9c531990310a09f
+              name: 'VM {#VM_NAME}: State'
+              type: DEPENDENT
+              key: hypercore.vm.state[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: CHAR
+              master_item:
+                key: hypercore.api.get[vms]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].state.first()" # FIX: Added .first()
+                  error_handler: DISCARD_VALUE
+            - uuid: 16d192352fa94ea4a5db8d1ea01a6c5c
+              name: 'VM {#VM_NAME}: Guest Agent Status'
+              type: DEPENDENT
+              key: hypercore.vm.guest_agent[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: CHAR
+              master_item:
+                key: hypercore.api.get[vms]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].guestAgentState.first()" # FIX: Added .first()
+                  error_handler: DISCARD_VALUE
+            # --- DISK USAGE ITEMS ---
+            - uuid: 4ece83a77f9e4c53b2c19cfd5c920ab5
+              name: 'VM {#VM_NAME}: Total Disk Capacity (Bytes)'
+              type: DEPENDENT
+              key: hypercore.vm.disk.capacity[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: B
+              master_item:
+                key: hypercore.api.get[vms]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].blockDevs[*].capacity.sum()" # Capacity sum
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: 8a7cb426e3a24d639dc59904c5c706f7
+              name: 'VM {#VM_NAME}: Disk Used Allocation (Bytes)'
+              type: DEPENDENT
+              key: hypercore.vm.disk.used_allocated[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: B
+              master_item:
+                key: hypercore.api.get[vms]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].blockDevs[*].allocation.sum()" # Allocation sum
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: a2fa0be1a2d84b0faac81d8765fe37f1
+              name: 'VM {#VM_NAME}: Disk Allocation Growth Rate (Bps)'
+              type: DEPENDENT
+              key: hypercore.vm.disk.used_allocated.rate[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: Bps
+              master_item:
+                key: hypercore.api.get[vms] # Master item MUST be a main fetch item.
+              preprocessing:
+                - type: JSONPATH
+                  parameters: 
+                    - "$[?(@.uuid == '{#VM_ID}')].blockDevs[*].allocation.sum()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+                - type: CHANGE_PER_SECOND
+                  parameters: []
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+            # CPU/Network stats items query VM Stats master item (vmstats)
+            - uuid: f6f436a31ad9434c8b8db29319c87ed4
+              name: 'VM {#VM_NAME}: CPU Usage'
+              type: DEPENDENT
+              key: hypercore.vm.cpu_usage[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: '%'
+              master_item:
+                key: hypercore.api.get[vmstats]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].cpuUsage.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: d3b2a3f70b74489ea0f8a53e67c6c1d5
+              name: 'VM {#VM_NAME}: Network RX Rate'
+              type: DEPENDENT
+              key: hypercore.vm.net_rx[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: bps
+              master_item:
+                key: hypercore.api.get[vmstats]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].rxBitRate.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: 829399b2d8ae4a9b9dd45e01f675a87f
+              name: 'VM {#VM_NAME}: Network TX Rate'
+              type: DEPENDENT
+              key: hypercore.vm.net_tx[{#VM_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: bps
+              master_item:
+                key: hypercore.api.get[vmstats]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#VM_ID}')].txBitRate.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+          trigger_prototypes:
+            - uuid: 9546a4651d54422099a584d6acaba2cf
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.vm.state[{#VM_ID}])<>"RUNNING"'
+              name: 'VM {#VM_NAME} is not running'
+              priority: INFO
+              description: VM {#VM_NAME} state is {ITEM.VALUE} (not 'RUNNING').
+            - uuid: 4ab5e0503c5a43288b97461c4017cad7
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.vm.guest_agent[{#VM_ID}])<>"AVAILABLE" and last(/Template Scale Computing HyperCore API/hypercore.vm.state[{#VM_ID}])="RUNNING"'
+              name: 'VM {#VM_NAME} Guest Agent is unavailable'
+              priority: WARNING
+              description: The Guest Agent on VM {#VM_NAME} is not responding, but the VM is running.
+        - uuid: cc0870c3c5544f709b5edb829fb2b837
+          name: Physical Drive Discovery
+          type: DEPENDENT
+          key: hypercore.drives.discovery
+          delay: '0'
+          master_item:
+            key: hypercore.api.get[drives]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+          lld_macro_paths:
+            - lld_macro: '{#DRIVE_ID}'
+              path: $.uuid
+            - lld_macro: '{#DRIVE_SN}'
+              path: $.serialNumber
+            - lld_macro: '{#DRIVE_SLOT}'
+              path: $.slot
+          item_prototypes:
+            - uuid: 220b4f9765bf4e21b6c0ed24b356cdf5
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Health Status'
+              type: DEPENDENT
+              key: hypercore.drive.healthy[{#DRIVE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT # Using FLOAT for 0/1, value map handles display
+              master_item:
+                key: hypercore.api.get[drives]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#DRIVE_ID}')].isHealthy.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+                - type: BOOL_TO_DECIMAL
+                  parameters: []
+              valuemap:
+                name: Zabbix boolean
+            - uuid: ec9eb41d5d1e44d78e91a7d2e2c762e8
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Temperature'
+              type: DEPENDENT
+              key: hypercore.drive.temp[{#DRIVE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT # API returns integer, float handles it fine
+              units: C
+              master_item:
+                key: hypercore.api.get[drives]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#DRIVE_ID}')].temperature.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+            - uuid: cff2f1fd0c3c46c1a297f92fdb07361d
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Error Count'
+              type: DEPENDENT
+              key: hypercore.drive.errors[{#DRIVE_ID}]
+              delay: '0'
+              history: 7d
+              value_type: FLOAT # API returns integer, float handles it fine
+              units: errors
+              master_item:
+                key: hypercore.api.get[drives]
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$[?(@.uuid == '{#DRIVE_ID}')].errorCount.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+          trigger_prototypes:
+            - uuid: a15325f148fe4087aceee5c69ba984fb
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.drive.healthy[{#DRIVE_ID}])=0'
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is unhealthy'
+              priority: HIGH
+              description: The 'isHealthy' status for drive {#DRIVE_SN} is 'false'. The drive might need replacement.
+            - uuid: 94661649b86a41dcac12507a3320b62e
+              expression: 'last(/Template Scale Computing HyperCore API/hypercore.drive.errors[{#DRIVE_ID}])>0'
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is reporting errors'
+              priority: WARNING
+              description: Drive {#DRIVE_SN} has reported {ITEM.VALUE} errors.
+              dependencies:
+                - name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is unhealthy'
+                  expression: 'last(/Template Scale Computing HyperCore API/hypercore.drive.healthy[{#DRIVE_ID}])=0'
+            - uuid: 70f9d44495014c7694a56779016d7489
+              expression: 'avg(/Template Scale Computing HyperCore API/hypercore.drive.temp[{#DRIVE_ID}],5m)>65'
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) temperature is high'
+              priority: AVERAGE
+              description: The temperature of drive {#DRIVE_SN} is {ITEM.VALUE}C, exceeding the threshold (65C).
+      valuemaps:
+        - uuid: 6787163ebbed42369966666ec415ec35 # Placeholder UUID - Regenerate locally
+          name: 'Zabbix boolean'
+          mappings:
+            - value: '0'
+              newvalue: 'False'
+            - value: '1'
+              newvalue: 'True'
