@@ -1,92 +1,71 @@
-# Scale Computing HyperCore Monitoring Template
+# Scale Computing HyperCore by HTTP Monitoring for Zabbix
 
-This Zabbix template is designed to monitor a Scale Computing HyperCore cluster by directly querying its REST API (v1). It utilizes the **HTTP Agent** and **Low-Level Discovery (LLD)** to automatically monitor nodes, virtual machines (VMs), and physical drives, including real-time performance metrics and disposition status.
+This Zabbix monitoring solution uses the Scale Computing HyperCore REST API to automatically discover and monitor your cluster's Nodes, VMs, and Physical Drives.
 
-This template has been validated on **Zabbix 7.0** and is engineered to handle complex JSON data and array parsing errors common in API integrations.
+It uses a "host-per-object" model, meaning Zabbix will create an individual host for each discovered Node and VM, giving you a clean, organized view of your infrastructure.
 
----
+## Features
 
-## 🚀 Usage and Setup
+This solution consists of three templates:
 
-### 1. Prerequisites
+* **`Template Scale Computing HyperCore API` (Main Template):**
+    * This is the *only* template you link to your main cluster host.
+    * It performs Low-Level Discovery (LLD) to find all Nodes and VMs.
+    * It creates a new Zabbix host for each Node, linking it to the `Template Scale Computing Node`.
+    * It creates a new Zabbix host for each VM, linking it to the `Template Scale Computing VM`.
 
-1.  **Zabbix Version:** Zabbix 5.4 or newer (optimized for 7.0).
+* **`Template Scale Computing Node` (Node Template):**
+    * Monitors a single SCNode host (CPU Usage, Memory Usage, Network Status, Disposition).
+    * Contains triggers for Node status (Offline, CPU, Memory).
+    * Contains a *nested* LLD rule to discover all physical drives associated with *that specific node*.
+    * Creates items and triggers for each drive (Health, Temperature, Error Count).
 
-2.  **API Access:** A valid Scale Computing HyperCore user account with read-only API access.
+* **`Template Scale Computing VM` (VM Template):**
+    * Monitors a single VM host (CPU Usage, VM State, Guest Agent Status, Disk Allocation).
+    * Contains triggers for VM status (Not Running, Agent Unavailable, CPU).
 
-### 2. Import Template
+## Setup Instructions
 
-1.  Go to **Data collection** -> **Templates** in the Zabbix frontend.
+1.  **Import Templates:** Import the final YAML file (`Scale_Computing_Hypercore_Zabbix.yaml`) into your Zabbix instance. This will add all three templates and the required host groups (`HyperCore Nodes`, `Virtual machines`).
 
-2.  Click **Import** (top right corner).
+2.  **Create Cluster Host:**
+    * Create a single new host in Zabbix. This host will represent your entire Scale Computing cluster (e.g., `sc-cluster.yourdomain.com`).
+    * **Agent interface:** This host does not need an agent. You can remove all interfaces.
+    * **Templates Tab:** Link *only* the `Template Scale Computing HyperCore API` to this host.
 
-3.  Select the YAML template file (e.g., `template_scale_api_final.yaml`).
+3.  **Configure Macros:**
+    * On the **Macros** tab for your new cluster host, set the following three "Inherited and host macros":
+        * `{$API_URL}`: The base URL of your cluster (e.g., `https://172.16.0.241`)
+        * `{$API_USER}`: The API username (e.g., `zabbix`)
+        * `{$API_PASS}`: The API user's password.
 
-4.  Click **Import**.
+4.  **Run Discovery:**
+    * Wait for the discovery rules to run (default is 5 minutes), or force them by:
+        * Going to your cluster host's **Items** list.
+        * Clicking **Execute now** for `HyperCore API: Get All Nodes (for LLD)`.
+        * Clicking **Execute now** for `HyperCore API: Get All VMs (for LLD)`.
 
-### 3. Configure Host and Macros
+Within a few minutes, Zabbix will automatically create new hosts for all your VMs (e.g., `VM MyWebServer`) and Nodes (e.g., `SCNode 172.16.0.20`). These new hosts will automatically inherit the API credentials and start polling for data.
 
-The template requires three mandatory host macros to successfully authenticate and connect to the HyperCore API.
+## What is Monitored
 
-1.  Go to **Data collection** -> **Hosts**.
+Here is a breakdown of the items that will be created on your discovered hosts.
 
-2.  Select the host representing your Scale Computing cluster (or create a new one).
+### On Each `SCNode` Host
 
-3.  Go to the **Templates** tab and link the `Scale Computing HyperCore by HTTP` template.
+* **Node CPU Usage:** The total CPU utilization of the physical node, as a percentage.
+* **Node Memory Usage (%)**: The total RAM utilization of the physical node, as a percentage.
+* **Node Network Status:** The health of the node's network connection to the cluster. `ONLINE` is healthy.
+* **Node Disposition:** The operational state of the node. `IN` is the normal, healthy state. Other states like `OUT` or `EVACUATING` will trigger an alert.
+* **Discovered Drives (for each drive):**
+    * **Health Status:** A boolean (True/False) reported by the drive's S.M.A.R.T. diagnostics.
+    * **Temperature:** The drive's internal temperature in Celsius.
+    * **Error Count:** A counter of read/write or other hardware errors.
 
-4.  Go to the **Macros** tab and set the following values:
+### On Each `VM` Host
 
-| Macro | Type | Example Value | Description |
-| :---- | :---- | :---- | :---- |
-| **{$API_URL}** | Text | https://172.16.0.241 | The base URL of the HyperCore API (must include http:// or https://). **Do not include /rest/v1.** |
-| **{$API_USER}** | Text | api_reader | Username for Basic Authentication. |
-| **{$API_PASS}** | **Secret text** | P@$$w0rdS3curE! | Password for Basic Authentication. (Must be stored as Secret text). |
-
-5.  Click **Update**. The master items should turn green within one minute, and discovery should begin shortly thereafter.
-
----
-
-## 📊 Monitored Metrics (LLD)
-
-The template utilizes four master HTTP Agent items to retrieve data and three Low-Level Discovery rules to dynamically create items for each unique resource found.
-
-### 1. Node Discovery (Cluster Members)
-
-| LLD Macro | Item Prototype | Unit | Description |
-| :-------- | :------------- | :--- | :---------- |
-| {##NODE_NAME} | **CPU Usage** | % | Current CPU utilization of the node. |
-| | **Memory Usage** | % | Current total memory utilization of the node. |
-| | **Network Status** | Char | Network connectivity status (ONLINE, OFFLINE). |
-| | **Disposition** | Char | Node status regarding cluster participation (IN, EVACUATED, OUT). |
-
-### 2. VM Discovery (Virtual Machines)
-
-| LLD Macro | Item Prototype | Unit | Description |
-| :-------- | :------------- | :--- | :---------- |
-| {##VM_NAME} | **State** | Char | Current power state of the VM (RUNNING, SHUTOFF, etc.). |
-| | **Guest Agent Status** | Char | Status of the Scale Guest Agent (AVAILABLE, UNAVAILABLE). |
-| | **CPU Usage** | % | Current CPU utilization by the VM. |
-| | **Network RX Rate** | bps | Incoming network traffic rate. |
-| | **Network TX Rate** | bps | Outgoing network traffic rate. |
-| | **Total Disk Capacity** | B | Logical capacity reserved for the VM (sum of all virtual disks). |
-| | **Disk Used Allocation** | B | Actual disk space used (allocated) by the VM on shared storage. |
-
-### 3. Physical Drive Discovery
-
-| LLD Macro | Item Prototype | Unit | Description |
-| :-------- | :------------- | :--- | :---------- |
-| {##DRIVE_SN} | **Health Status** | Float | Drive health status (0=Unhealthy, 1=Healthy). Uses "Zabbix boolean" Value Map. |
-| | **Temperature** | C | Current reported drive temperature. |
-| | **Error Count** | errors | Total count of drive errors (reallocated sectors, etc.). |
-
-### 🚨 Trigger Thresholds
-
-* **Node Offline:** High priority if **Network Status is not ONLINE**.
-
-* **Node Disposition:** Warning if **Disposition is not IN**.
-
-* **Utilization:** Warning if Node CPU or Memory Usage average exceeds **90%** over 5 minutes.
-
-* **Drive Health:** High priority if **Health Status is False (0)**.
-
-* **Guest Agent:** Warning if **Guest Agent Status is not AVAILABLE** while the VM is running.
+* **VM State:** The power state of the virtual machine. `RUNNING` is the normal state. Triggers on any other state (e.g., `STOPPED`, `PAUSED`).
+* **Guest Agent Status:** The status of the Scale Guest Tools inside the VM's operating system. `AVAILABLE` is healthy.
+* **CPU Usage:** The CPU utilization of *this specific VM*, as a percentage.
+* **Disk Used Allocation (Bytes):** The total physical storage (in bytes) that the VM's virtual disks are currently consuming on the cluster.
+* **Disk Allocation Growth Rate (Bps):** A calculated rate (in bytes per second) showing how fast the VM's disk allocation is growing. Useful for spotting runaway logs or backups.

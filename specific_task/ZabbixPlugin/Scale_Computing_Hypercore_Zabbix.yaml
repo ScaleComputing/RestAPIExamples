@@ -1,0 +1,441 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 7c0ac5bdc3534844ad44c2878ad9c5f9
+      name: Templates/Applications
+  host_groups:
+    - uuid: 6613e553dce04927a61fb572cc9505ff
+      name: 'HyperCore Nodes'
+    - uuid: 1d149f6520ca4acb9236d537a4b251be
+      name: 'Virtual machines'
+  templates:
+    - uuid: 7ca8528ca7504139994b4e25fb9684bc
+      template: 'Template Scale Computing HyperCore API'
+      name: 'Scale Computing HyperCore by HTTP'
+      description: |
+        Monitors Scale Computing HyperCore cluster.
+        Discovers Nodes and VMs and creates Zabbix hosts for them.
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 00c3ae73c0684cb3a33827148b0d5b75
+          name: 'HyperCore API: Get All Nodes (for LLD)'
+          type: HTTP_AGENT
+          key: 'hypercore.api.get[nodes_for_discovery]'
+          delay: 5m
+          history: 1h
+          value_type: TEXT
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          url: '{$API_URL}/rest/v1/Node'
+        - uuid: e3092651165a43e58370aafc08904b48
+          name: 'HyperCore API: Get All VMs (for LLD)'
+          type: HTTP_AGENT
+          key: 'hypercore.api.get[vms_for_discovery]'
+          delay: 5m
+          history: 1h
+          value_type: TEXT
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          url: '{$API_URL}/rest/v1/VirDomain'
+      discovery_rules:
+        - uuid: 1b720aad17f647edbb68e5e40f08cc46
+          name: 'Node Discovery'
+          type: DEPENDENT
+          key: hypercore.nodes.discovery
+          delay: '0'
+          host_prototypes:
+            - uuid: c6aa9834ab714a7486c3bf646c82e116
+              host: '{#NODE_ID}'
+              name: 'SCNode {#NODE_NAME}'
+              group_links:
+                - group:
+                    name: 'HyperCore Nodes'
+              templates:
+                - name: 'Template Scale Computing Node'
+              macros:
+                - macro: '{$NODE_ID}'
+                  value: '{#NODE_ID}'
+          master_item:
+            key: 'hypercore.api.get[nodes_for_discovery]'
+          lld_macro_paths:
+            - lld_macro: '{#NODE_ID}'
+              path: $.uuid
+            - lld_macro: '{#NODE_NAME}'
+              path: $.lanIP
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+        - uuid: 7e0cea6bc1ec4e70b79913494d5ecf0a
+          name: 'VM Discovery'
+          type: DEPENDENT
+          key: hypercore.vms.discovery
+          delay: '0'
+          host_prototypes:
+            - uuid: 8f3a750074424245978c77a7b3a0a66c
+              host: '{#VM_ID}'
+              name: 'VM {#VM_NAME}'
+              group_links:
+                - group:
+                    name: 'Virtual machines'
+              templates:
+                - name: 'Template Scale Computing VM'
+              macros:
+                - macro: '{$VM_ID}'
+                  value: '{#VM_ID}'
+          master_item:
+            key: 'hypercore.api.get[vms_for_discovery]'
+          lld_macro_paths:
+            - lld_macro: '{#VM_ID}'
+              path: $.uuid
+            - lld_macro: '{#VM_NAME}'
+              path: $.name
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.*'
+      macros:
+        - macro: '{$API_PASS}'
+          type: SECRET_TEXT
+          description: 'Password for API Basic Authentication'
+        - macro: '{$API_URL}'
+          description: 'Base URL of the HyperCore API (e.g., https://your-cluster-ip)'
+        - macro: '{$API_USER}'
+          description: 'Username for API Basic Authentication'
+    - uuid: d496a54cf96145da884f7f4b7789cd4b
+      template: 'Template Scale Computing Node'
+      name: 'Scale Computing Node by HTTP'
+      description: 'Defines items for a single Scale Computing Node and discovers its drives.'
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 66de609d9adc4b08933e72d4de149aa6
+          name: 'HyperCore API: Get All Drives (for LLD)'
+          type: HTTP_AGENT
+          key: 'hypercore.api.get[drives_for_discovery]'
+          delay: 5m
+          history: 1h
+          value_type: TEXT
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          timeout: 15s
+          url: '{$API_URL}/rest/v1/Drive'
+        - uuid: cd4fbf05e58d45ec8b9347f50c2f1a41
+          name: 'Node CPU Usage'
+          type: HTTP_AGENT
+          key: hypercore.node.cpu_usage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$NODE_ID}'')].cpuUsage.first()'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          url: '{$API_URL}/rest/v1/Node'
+          triggers:
+            - uuid: 34a020f730644b6cb2cd7f29d02794b5
+              expression: 'avg(/Template Scale Computing Node/hypercore.node.cpu_usage,5m)>90'
+              name: 'Node CPU utilization is high'
+              priority: WARNING
+              description: 'Average CPU usage on node exceeded 90% for 5 minutes.'
+        - uuid: 5aa07432045c4426ae3dc31479eaf9d6
+          name: 'Node Disposition'
+          type: HTTP_AGENT
+          key: hypercore.node.disposition
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$NODE_ID}'')].currentDisposition.first()'
+              error_handler: DISCARD_VALUE
+          url: '{$API_URL}/rest/v1/Node'
+          triggers:
+            - uuid: 81c6cdc8f5d04cbdb04194416a1fdc4a
+              expression: 'last(/Template Scale Computing Node/hypercore.node.disposition)<>"IN"'
+              name: "Node has unusual status (not 'IN')"
+              priority: WARNING
+              description: 'Node disposition is {ITEM.VALUE} (not ''IN''). This might indicate maintenance or evacuation.'
+        - uuid: 106907e45461410b8c1a73b8450d67d9
+          name: 'Node Memory Usage (%)'
+          type: HTTP_AGENT
+          key: hypercore.node.mem_usage_pct
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$NODE_ID}'')].memUsagePercentage.first()'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          url: '{$API_URL}/rest/v1/Node'
+          triggers:
+            - uuid: f1081bcd5fb54d47ac2a28dd65d1b407
+              expression: 'avg(/Template Scale Computing Node/hypercore.node.mem_usage_pct,5m)>90'
+              name: 'Node memory utilization is high'
+              priority: WARNING
+              description: 'Average memory usage on node exceeded 90% for 5 minutes.'
+        - uuid: e83b46990772463b922b959c79c76ea5
+          name: 'Node Network Status'
+          type: HTTP_AGENT
+          key: hypercore.node.network_status
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$NODE_ID}'')].networkStatus.first()'
+              error_handler: DISCARD_VALUE
+          url: '{$API_URL}/rest/v1/Node'
+          triggers:
+            - uuid: bbf79e28079a408c9bb9240721bccf01
+              expression: 'last(/Template Scale Computing Node/hypercore.node.network_status)<>"ONLINE"'
+              name: 'Node is offline'
+              priority: HIGH
+              description: 'The network status for the node is not ''ONLINE''.'
+      discovery_rules:
+        - uuid: 276f0b2c8c644f67a27603e57da481ac
+          name: 'Physical Drive Discovery'
+          type: DEPENDENT
+          key: hypercore.node.drives.discovery
+          delay: '0'
+          item_prototypes:
+            - uuid: db32f539f3d740eb9591c09786604025
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Error Count'
+              type: HTTP_AGENT
+              key: 'hypercore.drive.errors[{#DRIVE_ID}]'
+              delay: 5m
+              history: 7d
+              value_type: FLOAT
+              units: errors
+              authtype: BASIC
+              username: '{$API_USER}'
+              password: '{$API_PASS}'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.uuid == ''{#DRIVE_ID}'')].errorCount.first()'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+              url: '{$API_URL}/rest/v1/Drive'
+              trigger_prototypes:
+                - uuid: 0a73b58ea26b46a385b08ad1c563d31e
+                  expression: 'last(/Template Scale Computing Node/hypercore.drive.errors[{#DRIVE_ID}])>0'
+                  name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is reporting errors'
+                  priority: WARNING
+                  description: 'Drive {#DRIVE_SN} has reported {ITEM.VALUE} errors.'
+                  dependencies:
+                    - name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is unhealthy'
+                      expression: 'last(/Template Scale Computing Node/hypercore.drive.healthy[{#DRIVE_ID}])=0'
+            - uuid: 358e3812a2294f748bab54868ff0553d
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Health Status'
+              type: HTTP_AGENT
+              key: 'hypercore.drive.healthy[{#DRIVE_ID}]'
+              delay: 5m
+              history: 7d
+              value_type: FLOAT
+              authtype: BASIC
+              username: '{$API_USER}'
+              password: '{$API_PASS}'
+              valuemap:
+                name: 'Zabbix boolean'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.uuid == ''{#DRIVE_ID}'')].isHealthy.first()'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+                - type: BOOL_TO_DECIMAL
+                  parameters:
+                    - ''
+              url: '{$API_URL}/rest/v1/Drive'
+              trigger_prototypes:
+                - uuid: cff0d98f86b247b495601fa8c3ec2917
+                  expression: 'last(/Template Scale Computing Node/hypercore.drive.healthy[{#DRIVE_ID}])=0'
+                  name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) is unhealthy'
+                  priority: HIGH
+                  description: 'The ''isHealthy'' status for drive {#DRIVE_SN} is ''false''. The drive might need replacement.'
+            - uuid: 958ea7dd17d949dea4fc9a34637e47e8
+              name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Temperature'
+              type: HTTP_AGENT
+              key: 'hypercore.drive.temp[{#DRIVE_ID}]'
+              history: 7d
+              value_type: FLOAT
+              units: C
+              authtype: BASIC
+              username: '{$API_USER}'
+              password: '{$API_PASS}'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.uuid == ''{#DRIVE_ID}'')].temperature.first()'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+              url: '{$API_URL}/rest/v1/Drive'
+              trigger_prototypes:
+                - uuid: abc220647a1a42c6b318caa8c2ce1e16
+                  expression: 'avg(/Template Scale Computing Node/hypercore.drive.temp[{#DRIVE_ID}],5m)>65'
+                  name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}) temperature is high'
+                  priority: AVERAGE
+                  description: 'The temperature of drive {#DRIVE_SN} is {ITEM.VALUE}C, exceeding the threshold (65C).'
+          master_item:
+            key: 'hypercore.api.get[drives_for_discovery]'
+          lld_macro_paths:
+            - lld_macro: '{#DRIVE_ID}'
+              path: $.uuid
+            - lld_macro: '{#DRIVE_SLOT}'
+              path: $.slot
+            - lld_macro: '{#DRIVE_SN}'
+              path: $.serialNumber
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.nodeUUID == ''{$NODE_ID}'')]'
+              error_handler: DISCARD_VALUE
+      macros:
+        - macro: '{$NODE_ID}'
+      valuemaps:
+        - uuid: 25a763c474714dbe9c99d4195d9a7fdc
+          name: 'Zabbix boolean'
+          mappings:
+            - value: '0'
+              newvalue: 'False'
+            - value: '1'
+              newvalue: 'True'
+    - uuid: c5c79d19c8a64716ad0887990f5a845a
+      template: 'Template Scale Computing VM'
+      name: 'Scale Computing VM by HTTP'
+      description: 'Defines items and triggers for a single Scale Computing VM.'
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 2d938300a35e427296f91a1c6540b32d
+          name: 'CPU Usage'
+          type: HTTP_AGENT
+          key: hypercore.vm.cpu_usage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$VM_ID}'')].cpuUsage.first()'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          url: '{$API_URL}/rest/v1/VirDomainStats'
+          triggers:
+            - uuid: bb1a73fceef64faa97bab8c722906511
+              expression: 'avg(/Template Scale Computing VM/hypercore.vm.cpu_usage,5m)>90'
+              name: 'VM CPU utilization is high'
+              priority: WARNING
+              description: 'Average CPU usage on VM exceeded 90% for 5 minutes.'
+        - uuid: 122109e7ba35461ba1ac115c6d3302d6
+          name: 'Disk Used Allocation (Bytes)'
+          type: HTTP_AGENT
+          key: hypercore.vm.disk.used_allocated
+          delay: 5m
+          history: 7d
+          value_type: FLOAT
+          units: B
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$VM_ID}'')].blockDevs[*].allocation.sum()'
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          url: '{$API_URL}/rest/v1/VirDomain'
+        - uuid: e5976dcb963648159a24d4d3e2ae7a79
+          name: 'Disk Allocation Growth Rate (Bps)'
+          type: DEPENDENT
+          key: hypercore.vm.disk.used_allocated.rate
+          delay: '0'
+          history: 7d
+          value_type: FLOAT
+          units: Bps
+          preprocessing:
+            - type: CHANGE_PER_SECOND
+              parameters:
+                - ''
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1h
+          master_item:
+            key: hypercore.vm.disk.used_allocated
+        - uuid: 3be0bd32e89c4012bea215c6bd2ac7f1
+          name: 'Guest Agent Status'
+          type: HTTP_AGENT
+          key: hypercore.vm.guest_agent
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$VM_ID}'')].guestAgentState.first()'
+              error_handler: DISCARD_VALUE
+          url: '{$API_URL}/rest/v1/VirDomain'
+          triggers:
+            - uuid: 08a3435a743e4ec7b29547f563633a30
+              expression: 'last(/Template Scale Computing VM/hypercore.vm.guest_agent)<>"AVAILABLE" and last(/Template Scale Computing VM/hypercore.vm.state)="RUNNING"'
+              name: 'VM Guest Agent is unavailable'
+              priority: WARNING
+              description: 'The Guest Agent on the VM is not responding, but the VM is running.'
+        - uuid: 34a750172eb6415fa15d467d0560eb6b
+          name: 'VM State'
+          type: HTTP_AGENT
+          key: hypercore.vm.state
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          authtype: BASIC
+          username: '{$API_USER}'
+          password: '{$API_PASS}'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$[?(@.uuid == ''{$VM_ID}'')].state.first()'
+              error_handler: DISCARD_VALUE
+          url: '{$API_URL}/rest/v1/VirDomain'
+          triggers:
+            - uuid: af3a6ec8959f4571a162454a38ca8f30
+              expression: 'last(/Template Scale Computing VM/hypercore.vm.state)<>"RUNNING"'
+              name: 'VM is not running'
+              priority: INFO
+              description: 'VM state is {ITEM.VALUE} (not ''RUNNING'').'
+      macros:
+        - macro: '{$VM_ID}'
