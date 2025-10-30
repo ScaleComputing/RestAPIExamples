@@ -52,7 +52,7 @@ import sys
 from collections import deque
 from statistics import mean
 import os
-import traceback # Added for detailed error logging
+import traceback
 
 # --- Configuration (Defaults - Can be overridden by ENV VARS) ---
 
@@ -87,13 +87,13 @@ def get_config_value(env_var_name, default_value, expected_type=str):
     if env_value is None:
         return default_value
 
-    original_env_value = env_value # Keep original for error messages
+    original_env_value = env_value
     try:
         if expected_type == bool:
             env_value = env_value.lower()
             if env_value in ('true', '1', 'yes', 'y'): return True
             if env_value in ('false', '0', 'no', 'n'): return False
-            raise ValueError("Invalid boolean value") # Raise error if not recognized
+            raise ValueError("Invalid boolean value")
         elif expected_type == int:
             val = int(env_value)
             if env_var_name.endswith(('_SECONDS', '_MINUTES')) and val < 0:
@@ -106,7 +106,7 @@ def get_config_value(env_var_name, default_value, expected_type=str):
             return val
         elif expected_type == list:
             return [ip.strip() for ip in env_value.split(',') if ip.strip()]
-        else: # Default is string
+        else:
             return str(env_value)
     except ValueError as e:
         print(f"WARN: Invalid value '{original_env_value}' for ENV VAR '{env_var_name}' (expected {expected_type.__name__}): {e}. Using default: {default_value}")
@@ -187,11 +187,6 @@ class HyperCoreApiClient:
         action = [{"virDomainUUID": vm_uuid, "actionType": "LIVEMIGRATE", "nodeUUID": target_node_uuid}]; return self._post("/VirDomain/action", action)
 
     def is_update_active(self, all_nodes):
-        """
-        Checks if a cluster update is active using /update/update_status.json endpoint.
-        Uses the provided node list to determine check order and fallbacks.
-        Handles potential 401 by retrying internally via _request for node list check.
-        """
         nodes_to_check = []; other_node_ips = []; primary_check_failed = False; primary_node_details = None
         if not all_nodes: print("  - WARN: No node list for update check. Only trying primary."); nodes_to_check = [self.primary_host_address]
         else:
@@ -217,7 +212,7 @@ class HyperCoreApiClient:
                             print(f"  - Double-checking primary ({self.primary_host_address}) status via secondary ({node_ip})...")
                             secondary_api_base = f"{scheme}://{node_ip}/rest/v1"
                             try:
-                                nodes_from_secondary = self.get_nodes(base_override=secondary_api_base) # Uses _request with re-login
+                                nodes_from_secondary = self.get_nodes(base_override=secondary_api_base)
                                 primary_status = "UNKNOWN (Not in list)"; primary_uuid = primary_node_details.get('uuid')
                                 if primary_uuid:
                                     for node in nodes_from_secondary:
@@ -231,11 +226,10 @@ class HyperCoreApiClient:
                 if is_primary: primary_check_failed = True
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 print(f"  - WARN: Failed get/parse update status from {node_ip}: {e}")
-                if is_primary: primary_check_failed = True # Indentation Fixed
+                if is_primary: primary_check_failed = True
             except Exception as e:
-                 print(f"  - WARN: Unexpected error checking update status on {node_ip}: {e}")
-                 if is_primary: primary_check_failed = True # Indentation Fixed
-
+                 print(f"  - WARN: Unexpected error check update on {node_ip}: {e}")
+                 if is_primary: primary_check_failed = True
         print(f"  - WARN: Cannot determine update status from any node ({', '.join(nodes_to_check)}). Assuming active (fail-safe)."); return True
 
 
@@ -281,8 +275,9 @@ class LoadBalancer:
             if not node_uuid: continue
             node_status = node.get('networkStatus'); supports_virt = node.get('supportsVirtualization', True); virt_online = node.get('virtualizationOnline', True)
             is_excluded = node.get('lanIP') in self.exclude_ips_set
-            is_usable = node.get('allowRunningVMs', False) and node_status == 'ONLINE' and not is_excluded and supports_virt and virt_online
-            exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not node.get('allowRunningVMs') else ("No Virtualization Support" if not supports_virt else ("Virtualization Offline" if not virt_online else ""))))
+            allow_vms = node.get('allowRunningVMs', True) # Default to True, matching API
+            is_usable = allow_vms and node_status == 'ONLINE' and not is_excluded and supports_virt and virt_online
+            exclude_reason = "Manually Excluded" if is_excluded else ("Offline" if node_status != 'ONLINE' else ("VMs Disallowed" if not allow_vms else ("No Virtualization Support" if not supports_virt else ("Virtualization Offline" if not virt_online else ""))))
             avg_cpu = -1.0; ram_percent = 100.0 if not is_usable else 0.0
             running_vms = []; total_ram = node.get('memSize', 0); used_ram = node.get('totalMemUsageBytes', 0)
             if is_usable:
@@ -305,10 +300,13 @@ class LoadBalancer:
         return [t.strip() for t in (vm.get('tags') or "").split(',') if t.strip()]
 
     def _get_node_by_ip_suffix(self, nodes, suffix):
-        target = f".{suffix}"
-        for node in nodes: ip = node.get('lanIP');
-        if ip and ip.endswith(target): return node
-        return None
+        """Finds a node object by the last octet of its LAN IP."""
+        target_suffix = f".{suffix}"
+        for node in nodes:
+            lan_ip = node.get('lanIP')
+            if lan_ip and lan_ip.endswith(target_suffix):
+                return node # Return immediately on first match
+        return None # Return None if no match is found
 
     def check_and_warn_node_affinity_violations(self, vms, nodes):
         node_map = {n['uuid']: n for n in nodes if n.get('uuid')}; violations = 0
@@ -376,12 +374,24 @@ class LoadBalancer:
                 if tag.startswith('node_'):
                     try: affinity_suffix = tag.split('_', 1)[1]; affinity_tag = tag; break
                     except (IndexError, ValueError): continue
+            
             if not affinity_suffix: continue
 
+            # --- Start Debug Block ---
+            vm_name = vm.get('name', 'N/A')
+            print(f"  - INFO: Found VM '{vm_name}' with affinity tag '{affinity_tag}'.")
             target_node_obj = self._get_node_by_ip_suffix(nodes, affinity_suffix)
-            if not target_node_obj: continue
-
+            
+            if not target_node_obj:
+                print(f"  - INFO: Could not find any node with IP suffix '.{affinity_suffix}' for VM '{vm_name}'.")
+                continue
+                
             target_node_uuid = target_node_obj.get('uuid')
+            target_node_ip = target_node_obj.get('lanIP', target_node_uuid)
+            print(f"  - INFO: VM '{vm_name}' wants target node {target_node_ip} ({target_node_uuid}).")
+            print(f"  - INFO: VM '{vm_name}' is currently on node {cluster_state.get(current_node_uuid,{}).get('name', current_node_uuid)} ({current_node_uuid}).")
+            # --- End Debug Block ---
+
             target_node_state = cluster_state.get(target_node_uuid)
 
             if current_node_uuid != target_node_uuid:
@@ -576,12 +586,11 @@ class LoadBalancer:
                     if status in ["COMPLETE", "ERROR", "UNINITIALIZED", "UNKNOWN"]:
                         if status == "COMPLETE":
                             print(f"  - Task {task_tag} COMPLETE.")
-                            # Removed clear_vm_affinity call
                             self.vm_last_moved_times[vm_uuid] = time.time()
                             print(f"  - VM {vm_uuid} cooldown started.")
                         else: print(f"  - WARNING: Task {task_tag} state {status}.")
                         self.active_migration_task = None; self.last_migration_time = time.time()
-                        self.node_cpu_history.clear(); self.vm_cpu_history.clear() # Clear history after move
+                        self.node_cpu_history.clear(); self.vm_cpu_history.clear()
                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
                 # --- 2. Check Recovery Cooldown ---
@@ -598,40 +607,40 @@ class LoadBalancer:
                 print("Collecting cluster data...")
                 nodes_data, vms_data, vm_stats_data = self.collect_data()
 
-                current_nodes_list = [] # List to use for subsequent checks
+                current_nodes_list = []
                 if nodes_data is not None:
-                     self.last_known_nodes = nodes_data # Update if successful
+                     self.last_known_nodes = nodes_data
                      current_nodes_list = nodes_data
-                     if time.time() - self.last_migration_time > 1 : # Avoid printing right after migration
+                     if time.time() - self.last_migration_time > 1 :
                          print(f"  - Successfully collected data for {len(nodes_data)} nodes.")
                 elif self.last_known_nodes:
                      print("  - WARN: Failed collect node data. Using last known list for checks.")
-                     current_nodes_list = self.last_known_nodes # Use last known list
+                     current_nodes_list = self.last_known_nodes
                 else:
                      print("  - ERROR: Failed collect node data & no previous list. Cannot proceed.")
-                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2); continue # Wait longer and retry
+                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2); continue
 
                 if vms_data is None or vm_stats_data is None:
-                    print("  - ERROR: Failed collect VM/Stats data. Cannot proceed this cycle.")
-                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
+                    if nodes_data is None: # Only error out if *fresh* data failed entirely
+                        print("  - ERROR: Failed collect VM/Stats data. Cannot proceed this cycle.")
+                        time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
                 # --- 5. Check for Active Cluster Update (using current or last known nodes) ---
                 print("Checking cluster update status...")
-                if self.client.is_update_active(current_nodes_list): # Pass the potentially stale list
+                if self.client.is_update_active(current_nodes_list): # Pass the node list
                     print("  - Cluster update active or status unknown. Pausing balancing operations.")
                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS'] * 2); continue
                 else:
                     print("  - No active cluster update detected.")
 
                 # --- 6. Check OFFLINE Nodes & Manage Recovery ---
-                # Use the 'current_nodes_list' which is either fresh or last known good
                 offline_nodes = [n for n in current_nodes_list if n.get('networkStatus') == 'OFFLINE']
                 if offline_nodes:
                     if not self.cluster_was_unstable:
                         offline_names = [n.get('lanIP', n.get('uuid')) for n in offline_nodes]
                         print("!"*30 + f"\n  WARNING: Node(s) {offline_names} OFFLINE. Pausing.\n  Checking violations (warnings only):")
-                        self.check_and_warn_node_affinity_violations(vms_data if vms_data is not None else [], current_nodes_list) # Pass current lists
-                        self.check_and_warn_anti_affinity_violations(vms_data if vms_data is not None else []) # Pass current VMs
+                        self.check_and_warn_node_affinity_violations(vms_data if vms_data is not None else [], current_nodes_list)
+                        self.check_and_warn_anti_affinity_violations(vms_data if vms_data is not None else [])
                         print("!"*30)
                     self.cluster_was_unstable = True
                     time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
@@ -640,6 +649,11 @@ class LoadBalancer:
                     self.cluster_was_unstable = False
                     self.recovery_start_time = time.time()
                     time.sleep(1); continue
+                
+                # --- Stop if data collection failed ---
+                if nodes_data is None:
+                    print("  - Skipping affinity/balancing checks due to failed data collection this cycle.")
+                    time.sleep(self.config['SAMPLE_INTERVAL_SECONDS']); continue
 
                 # --- 7. Update History (Only if data collection was fully successful this cycle) ---
                 self.update_history(nodes_data, vms_data, vm_stats_data)
@@ -739,14 +753,14 @@ def main():
     print("-" * 75)
     
     # --- Initialize and Login ---
-    client = HyperCoreApiClient(base_url, username, password, verify_ssl=final_config['VERIFY_SSL']); # Pass creds for re-login
-    balancer = LoadBalancer(client, final_config) # Pass final_config directly
-    if not client.login(): sys.exit(1) # Initial login using stored creds
+    client = HyperCoreApiClient(base_url, username, password, verify_ssl=final_config['VERIFY_SSL']);
+    balancer = LoadBalancer(client, final_config)
+    if not client.login(): sys.exit(1)
 
     # --- Run Balancer ---
     try: balancer.run()
     except KeyboardInterrupt: print("\nCaught interrupt (Ctrl+C), stopping...")
-    except Exception as e: print(f"\nFATAL ERROR during execution: {e}"); traceback.print_exc() # Print traceback on fatal error
+    except Exception as e: print(f"\nFATAL ERROR during execution: {e}"); traceback.print_exc()
     finally: client.logout(); print("Script terminated.")
 
 if __name__ == "__main__":
