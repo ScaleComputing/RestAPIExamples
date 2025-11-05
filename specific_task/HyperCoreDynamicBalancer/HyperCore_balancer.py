@@ -230,7 +230,7 @@ class HyperCoreApiClient:
             except Exception as e:
                  print(f"  - WARN: Unexpected error check update on {node_ip}: {e}")
                  if is_primary: primary_check_failed = True
-        print(f"  - WARN: Cannot determine update status from any node ({', '.join(nodes_to_check)}). Assuming active (fail-safe)."); return True
+        print(f"  - WARN: Cannot determine update status from any node ({', '.join(nodes_to_check)}). Assuming the cluster has never been updated yet."); return False
 
 
 # --- Load Balancer Class ---
