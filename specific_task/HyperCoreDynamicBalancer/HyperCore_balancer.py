@@ -225,12 +225,12 @@ class HyperCoreApiClient:
                 print(f"  - Info: Node {node_ip} unreachable for update check.")
                 if is_primary: primary_check_failed = True
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                print(f"  - WARN: Failed get/parse update status from {node_ip}: {e}")
+                print(f"  - Info: Failed get/parse update status from {node_ip}: {e}")
                 if is_primary: primary_check_failed = True
             except Exception as e:
                  print(f"  - WARN: Unexpected error check update on {node_ip}: {e}")
                  if is_primary: primary_check_failed = True
-        print(f"  - WARN: Cannot determine update status from any node ({', '.join(nodes_to_check)}). Assuming active (fail-safe)."); return True
+        print(f"  - Info: Cannot determine update status from any node. Assuming no update history present. Continue operations"); return False
 
 
 # --- Load Balancer Class ---
