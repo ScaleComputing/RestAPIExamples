@@ -33,7 +33,7 @@ zabbix_export:
           name: 'HyperCore API: Get All Nodes (for LLD)'
           type: HTTP_AGENT
           key: 'hypercore.api.get[nodes_for_discovery]'
-          delay: 5m
+          delay: 2m
           history: 1h
           trends: '0'
           value_type: TEXT
@@ -46,7 +46,7 @@ zabbix_export:
           name: 'HyperCore API: Get All VMs (for LLD)'
           type: HTTP_AGENT
           key: 'hypercore.api.get[vms_for_discovery]'
-          delay: 5m
+          delay: 2m
           history: 1h
           trends: '0'
           value_type: TEXT
@@ -647,7 +647,7 @@ zabbix_export:
           name: 'HyperCore API: Get All Drives (for LLD)'
           type: HTTP_AGENT
           key: 'hypercore.api.get[drives_for_discovery]'
-          delay: 5m
+          delay: 2m
           history: 1h
           value_type: TEXT
           trends: '0'
@@ -681,7 +681,7 @@ zabbix_export:
               name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Error Count'
               type: HTTP_AGENT
               key: 'hypercore.drive.errors[{#DRIVE_ID}]'
-              delay: 5m
+              delay: 2m
               history: 7d
               value_type: FLOAT
               units: errors
@@ -708,7 +708,7 @@ zabbix_export:
               name: 'Drive {#DRIVE_SN} (Slot {#DRIVE_SLOT}): Health Status'
               type: HTTP_AGENT
               key: 'hypercore.drive.healthy[{#DRIVE_ID}]'
-              delay: 5m
+              delay: 2m
               history: 7d
               value_type: FLOAT
               authtype: BASIC
