@@ -4,8 +4,7 @@ ISO Download, Verification, and Upload Script for Scale Computing Hypercore
 Downloads an ISO, verifies checksum, and uploads to Hypercore
 
 Version: 1.1.0
-Author: Wyatt
-Repository: https://github.com/yourusername/hypercore-iso-uploader
+Author: Wyatt Searcy
 
 SECURITY WARNING:
 This script disables SSL certificate verification for self-signed certificates.
