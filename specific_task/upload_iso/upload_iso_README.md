@@ -52,9 +52,9 @@ Set any combination of these to avoid repeated prompts:
 
 ```bash
 # Credentials
-export HYPERCORE_CLUSTER="192.168.1.100"
-export HYPERCORE_USER="admin"
-export HYPERCORE_PASSWORD="your-password"
+export SC_HOST="192.168.1.100"
+export SC_USERNAME="admin"
+export SC_PASSWORD="your-password"
 
 # ISO URLs (optional - useful for automation)
 export ISO_URL="https://repo.almalinux.org/almalinux/10.0/isos/x86_64/AlmaLinux-10.0-x86_64-boot.iso"
