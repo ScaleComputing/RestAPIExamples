@@ -104,9 +104,9 @@ def get_credentials() -> Tuple[str, str, str]:
         SystemExit: If required credentials are not provided
     """
     # Try environment variables first
-    cluster = os.environ.get('HYPERCORE_CLUSTER')
-    username = os.environ.get('HYPERCORE_USER')
-    password = os.environ.get('HYPERCORE_PASSWORD')
+    cluster = os.environ.get('SC_HOST')
+    username = os.environ.get('SC_USERNAME')
+    password = os.environ.get('SC_PASSWORD')
     
     # Prompt for missing values
     if not cluster:
