@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SuperAudit Dashboard</title>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Chart.js Date Adapter (required for time-based charts) -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fas fa-chart-line"></i> SuperAudit Dashboard</h1>
+                <div class="header-info">
+                    <span id="cluster-name" class="cluster-name">Loading...</span>
+                    <span id="last-updated" class="last-updated">Last updated: --</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Status Cards -->
+        <div class="status-cards">
+            <div class="card">
+                <div class="card-icon cluster-health">
+                    <i class="fas fa-heartbeat"></i>
+                </div>
+                <div class="card-content">
+                    <h3>Cluster Health</h3>
+                    <div class="card-value" id="cluster-health-status">--</div>
+                    <div class="card-subtitle">
+                        <span id="cluster-health-details">Checking conditions...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon nodes">
+                    <i class="fas fa-network-wired"></i>
+                </div>
+                <div class="card-content">
+                    <h3>Nodes</h3>
+                    <div class="card-value" id="nodes-total">--</div>
+                    <div class="card-subtitle">
+                        <span class="status-online"><i class="fas fa-circle"></i> <span id="nodes-online">--</span> Online</span>
+                        <span class="status-offline"><i class="fas fa-circle"></i> <span id="nodes-offline">--</span> Offline</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon vms">
+                    <i class="fas fa-server"></i>
+                </div>
+                <div class="card-content">
+                    <h3>Virtual Machines</h3>
+                    <div class="card-value" id="vms-total">--</div>
+                    <div class="card-subtitle">
+                        <span class="status-running"><i class="fas fa-circle"></i> <span id="vms-running">--</span> Running</span>
+                        <span class="status-stopped"><i class="fas fa-circle"></i> <span id="vms-stopped">--</span> Stopped</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon storage">
+                    <i class="fas fa-hdd"></i>
+                </div>
+                <div class="card-content">
+                    <h3>Storage Capacity</h3>
+                    <div class="card-value" id="storage-usage">--</div>
+                    <div class="card-subtitle">
+                        <span id="storage-details">-- GB / -- GB</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon drives">
+                    <i class="fas fa-compact-disc"></i>
+                </div>
+                <div class="card-content">
+                    <h3>Drive Health</h3>
+                    <div class="card-value" id="drives-total">--</div>
+                    <div class="card-subtitle">
+                        <span class="status-healthy"><i class="fas fa-circle"></i> <span id="drives-healthy">--</span> Healthy</span>
+                        <span class="status-unhealthy"><i class="fas fa-circle"></i> <span id="drives-unhealthy">--</span> Unhealthy</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Row 1 -->
+        <div class="charts-row">
+            <div class="chart-container">
+                <h2><i class="fas fa-chart-area"></i> System Utilization Trend (30 Days)</h2>
+                <canvas id="utilization-chart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h2><i class="fas fa-chart-line"></i> VM Count Trend (30 Days)</h2>
+                <canvas id="vm-count-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- Charts Row 2 -->
+        <div class="charts-row">
+            <div class="chart-container">
+                <h2><i class="fas fa-database"></i> Storage Capacity Trend (30 Days)</h2>
+                <canvas id="storage-chart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h2><i class="fas fa-bell"></i> Active Conditions</h2>
+                <div class="conditions-filter">
+                    <label><input type="checkbox" id="filter-critical" checked> CRITICAL</label>
+                    <label><input type="checkbox" id="filter-warning" checked> WARNING</label>
+                    <label><input type="checkbox" id="filter-notice"> NOTICE</label>
+                    <label><input type="checkbox" id="filter-info"> INFO</label>
+                    <label><input type="checkbox" id="filter-debug"> DEBUG</label>
+                </div>
+                <div id="conditions-list" class="conditions-list">
+                    <div class="loading">Loading conditions...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- VM List -->
+        <div class="vm-list-container">
+            <h2><i class="fas fa-list"></i> Virtual Machines</h2>
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" id="vm-search" placeholder="Search VMs by name, type, or state...">
+            </div>
+            <div id="vm-list" class="vm-list">
+                <div class="loading">Loading VMs...</div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>SuperAudit v8.0 - Scale Computing HyperCore Monitoring</p>
+            <p>Database: <span id="db-stats">--</span></p>
+        </footer>
+    </div>
+
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
