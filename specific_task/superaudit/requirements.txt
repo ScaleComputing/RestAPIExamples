@@ -1,0 +1,19 @@
+# SuperAudit Requirements
+# Python 3.6 or later required
+
+# Excel output support (default format)
+openpyxl>=3.1.0
+
+# Database support (daemon mode and historical data)
+# No additional dependencies needed - using Python's built-in sqlite3
+
+# Dashboard support (web UI for historical data)
+flask>=2.0.0
+werkzeug>=2.0.0
+
+# Scheduler support (daemon mode)
+apscheduler>=3.10.0
+
+# Optional: For future enhancements
+# python-dateutil>=2.8.0  # Date handling for comparisons
+# pyyaml>=6.0              # Config file support
