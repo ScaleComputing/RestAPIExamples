@@ -4,7 +4,7 @@ This repository contains several example scripts for running API queries against
 
 These scripts are only examples and demonstrate common use cases with the APIs.
 
-Refer to this repository's tags for examples tied to a specific Scale release.
+Refer to this repository's tags for examples tied to a specific Scale Computing release.
 
 ## Full swagger documentation for the APIs
 

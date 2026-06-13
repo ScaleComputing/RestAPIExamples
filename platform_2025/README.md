@@ -1,4 +1,4 @@
-# Scale Computing Platform REST API Examples
+# Scale Computing™ Platform REST API Examples
 
 This folder contains the example scripts used during the SC//Platform 'Maximizing Hypercore Rest API' session.
 

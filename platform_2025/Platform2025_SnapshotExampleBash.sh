@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCUSERNAME="YOUR_USERNAME"                     # User on a Scale Compuintg cluster with the backup right assigned
+SCUSERNAME="YOUR_USERNAME"                     # User on a Scale Computing HyperCore cluster with the backup right assigned
 SCPASSWD="YOUR_PASSWORD"                       # Password for that user
 SCNODE="IP_OR_FQDN_OF_ONE_NODE"                # IP or FQDN for the cluster
 VMUUID="01234567-89ab-cdef-0123-456789abcdef"  # UUID of the VM we want to make a snapshot of
