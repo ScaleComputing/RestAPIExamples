@@ -23,7 +23,7 @@ Param(
     [Parameter(Mandatory = $true,Position = 0)]
     [ValidateNotNullOrEmpty()]
     [string] $Server,
-    [PSCredential] $Credential = (Get-Credential -Message "Enter Scale HC3 Credentials"),
+    [PSCredential] $Credential = (Get-Credential -Message "Enter Scale HyperCore Credentials"),
     [switch] $SkipCertificateCheck
 )
 
