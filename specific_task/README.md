@@ -1,9 +1,9 @@
 # Scale Computing System REST API Examples - Task Specific
 
-This repository contains scripts for running task-specific API queries against a SC//HyperCore™ cluster.
+This repository contains scripts for running task-specific API queries against an SC//HyperCore™ virtualization suite cluster.
 
 These scripts are only examples and demonstrate common use cases with the API.
-Refer to the API docs on a SC//HyperCore™ cluster for a detailed guide on available calls.
+Refer to the API docs on an SC//HyperCore™ virtualization suite cluster for a detailed guide on available calls.
 
 
 ### SnapshotReport.ps1

@@ -1,10 +1,10 @@
-# Scale Computing™ Platform REST API Examples
+# Scale Computing™ REST API Examples
 
-This repository contains several example scripts for running API queries against an **SC//HyperCore™** cluster or **SC//Fleet™** platform manager.
+This repository contains several example scripts for running API queries against an **SC//HyperCore™** virtualization suite cluster or **SC//Fleet Manager™** edge orchestration software.
 
 These scripts are only examples and demonstrate common use cases with the APIs.
 
-Refer to this repository's tags for examples tied to a specific Scale Computing release.
+Refer to this repository's tags for examples tied to a specific Scale Computing™ release.
 
 ## Full swagger documentation for the APIs
 
@@ -22,6 +22,6 @@ Scale Computing™ Terraform® Provider for HyperCore — https://github.com/Sca
 
 ---
 
-SC//HyperCore™ and SC//Fleet™ are trademarks of Scale Computing, Inc.
+SC//HyperCore™ and SC//Fleet Manager™ are trademarks of Scale Computing, Inc.
 
 Ansible® is a registered trademark of Red Hat, Inc. Terraform® is a registered trademark of HashiCorp, Inc. All other trademarks are the property of their respective owners.
