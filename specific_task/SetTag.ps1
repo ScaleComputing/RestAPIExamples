@@ -23,7 +23,7 @@ param(
 	[string]$vmString,
 	[Parameter(mandatory=$true)]
 	[string]$setTag,
-	[PSCredential] $Cred = (Get-Credential -Message "Enter Scale HC3 Credentials")
+	[PSCredential] $Cred = (Get-Credential -Message "Enter SC//HyperCore virtualization suite credentials")
 	)
 
 
