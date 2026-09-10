@@ -1,0 +1,27 @@
+# SC//HyperCore™ REST API Examples
+
+> Example scripts and field-tested integration notes for the SC//HyperCore™
+> REST API (https://<node-ip>/rest/v1/) and the SC//Fleet Manager™ API
+> (https://api.scalecomputing.com/api/v2).
+
+Critical conventions for generated code: every POST/PATCH/DELETE returns a
+taskTag that must be polled at GET /rest/v1/TaskTag/<tag> until terminal
+before the next call; every GET returns a single-element JSON array, even
+GET-by-UUID; many endpoints reject query filters (fetch all, filter
+client-side); clusters use self-signed TLS.
+
+## Docs
+
+- [AI assistant guide](CLAUDE.md): rules and naming traps that prevent most SC//HyperCore API bugs
+- [API field notes](docs/hypercore-api-field-notes.md): per-endpoint corrections, verified request/response shapes, and gotchas
+- [Reference VM lifecycle example](vm_lifecycle.py): create/start/migrate/clone/snapshot/delete with correct task-tag waits
+
+## Related
+
+- [SC//HyperCore Ansible® Collection](https://github.com/ScaleComputing/HyperCoreAnsibleCollection)
+- [SC//HyperCore Terraform® Provider](https://github.com/ScaleComputing/terraform-provider-hypercore)
+
+---
+
+*Scale Computing, SC//HyperCore, and SC//Fleet Manager are trademarks of
+Scale Computing, Inc. Other marks are the property of their respective owners.*
