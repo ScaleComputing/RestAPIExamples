@@ -118,14 +118,24 @@ bundle, which gets you real verification without a CA-signed cert.
 
 ### 5. Cluster update awareness
 
-While SC//HyperCore software is self-updating, **the REST API is not merely
-read-only — it becomes entirely unavailable, and it fails by hanging.**
+While SC//HyperCore software is self-updating, **the REST API on the node
+being updated is not merely read-only — it becomes entirely unavailable, and it
+fails by hanging.**
 
-The findings below were measured end to end across a real update on a
-single-node cluster going from 9.8.3 to 9.8.4, sampling every 5 seconds from
-before the update started until it settled.
+Measured end to end across two real updates, sampling every ~5 seconds from
+before each update started until it settled: a **single-node** cluster going
+9.8.3 → 9.8.4 (30 minutes), and a **4-node** cluster with running VMs going
+9.6.30 → 9.6.32 (3.5 hours).
+
+⚠ **On a multi-node cluster the outage is per node, and peers keep serving** —
+see "Multi-node: it's a rolling outage" below. That distinction is the
+difference between an unusable API and a usable one, so read both parts before
+designing a client.
 
 #### Use `update_status.json`, not `/rest/v1/`
+
+(Everything in this subsection was measured on the single-node cluster, where
+there is no peer to answer. The multi-node scoping follows further down.)
 
 ```
 GET https://<node-ip>/update/update_status.json
@@ -238,6 +248,69 @@ Three consequences for real client code:
   starting — a genuinely mid-update state that a naive check reads as an error
   it can ignore.
 
+#### Multi-node: it's a rolling outage, and failover is most of the answer
+
+On the 4-node cluster, while the node being updated was unreachable, **its
+peers served both channels normally**. Measured across the whole upgrade:
+
+- **314 sample rounds** had a healthy peer while another node was down.
+- **2 sample rounds** had every node unreachable at once (one ~19-second
+  window, during the first VM evacuation, before any node had rebooted; it did
+  not recur).
+- All four nodes followed the identical pattern, one at a time, with reboot
+  outages of **7.5–10 minutes each**.
+- Nodes on the new version served happily alongside nodes still on the old one.
+
+So the guidance is two-part, and neither half substitutes for the other:
+
+1. **Multi-endpoint failover** handles the per-node reboots, which dominate an
+   upgrade's wall clock. A client holding every node's address never lost
+   access across the entire 3.5-hour upgrade.
+2. **Retry with backoff** handles the rest — the brief all-node window, where
+   no other endpoint would have helped, and ordinary flakiness: peers not being
+   updated still returned scattered timeouts, roughly **97–98% availability**
+   rather than 100%. A single failed call to a healthy peer is expected.
+
+⚠ **A single hostname is not a cluster address — it is one node.** The
+cluster's DNS name failed and recovered in *exactly* the same sample rounds as
+one specific node IP, with identical outage durations, in all three of that
+node's outages. **A client configured with one hostname lost the cluster
+entirely while three of four nodes were healthy and serving.** Configure the
+node addresses, not a name. See Rule 6.
+
+#### Timing, and what `percent` does and doesn't mean
+
+- The 4-node upgrade took **3.5 hours**; the empty single-node one took **30
+  minutes**. Most of the difference is VM migration — evacuating and restoring
+  a node's VMs took ~15 minutes *per node*, on top of a ~10-minute reboot.
+- `totalComponents` scales with cluster size (688 for four nodes, 180 for one).
+- ⚠ **`percent` is cluster-wide but NOT proportional to nodes completed** — it
+  read 51% with only one of four nodes upgraded, because the shared prepare and
+  pre-flight phases account for a large share. Don't scale it into an ETA.
+- Multi-node prepare has two extra states: `BEGIN` → `DOWNLOAD BUNDLE` →
+  `DOWNLOAD RPMS` → **`SYNC NODES`** → `UPDATE RPM` → `COMPLETE`.
+
+#### Which node is being updated, and which are done
+
+- **`updateStatus.status.node` names the node currently being worked on** — but
+  in *backplane* addressing, not the LAN address you connect to. It's the clean
+  signal for following the rollout.
+- **`update_status.json` is cluster-consistent**: every node reports identical
+  `prepareStatus`, `masterState` and `percent`. Nodes do not disagree about
+  update progress.
+- **But `Cluster.icosVersion` is the ANSWERING node's version, not the
+  cluster's.** Mid-upgrade, the same request returns different versions
+  depending on which node serves it — a 2/2 split was observed directly. It
+  flips at that node's upgrade reboot, so it *is* a reliable per-node "this one
+  is done" signal — and simultaneously a trap:
+
+⚠ **Version-gated feature detection is unreliable during an upgrade.** For the
+hours an upgrade runs, a client asking "what version is this cluster?" gets an
+answer that depends on which node answered, and that can change on retry. If
+you gate behaviour on version, pin the answer for the operation rather than
+re-reading it per call. (`Node.activeVersion` is `0` and is not a version
+source.)
+
 #### Fail closed
 
 Treat every one of these as **busy**, not idle:
@@ -273,8 +346,11 @@ phase. It fails you at both ends:
   after that. So a client gating writes on it would keep refusing to write after
   the update was already finished.
 
-`update_status.json` is the only channel that survives the whole update and
-tracks it accurately at both edges.
+`update_status.json` is the channel that tracks the update accurately at both
+edges. ⚠ It is **not** guaranteed, though: it disappears when its own node
+reboots, and on the 4-node run one ~19-second window had it timing out on
+every node at once. Treat it as *more available* than any `/rest/v1/`
+endpoint, never as always-up.
 
 If you read `Condition` for other reasons, note that it returns the **full
 catalogue of every possible condition on every call** — over 250 entries — each
@@ -311,12 +387,34 @@ worth understanding before you copy it:
 SC//HyperCore clusters do not provide a floating/virtual IP for the REST API.
 Every endpoint is a specific node's address; the same API is served from
 every node, but if the node you configured goes down, that endpoint is dead
-even though the cluster is healthy. For anything long-running:
+even though the cluster is healthy. The only VIP-shaped field in the API is
+`Node.vips`, which is empty and marked deprecated in the spec.
+
+**This and Rule 5 are the same problem.** A rolling software update takes each
+node down in turn for several minutes, so an update is the most likely time a
+single-endpoint client will fail — measured directly: a client configured with
+the cluster's hostname lost access completely during an upgrade while three of
+four nodes were serving, and a client holding all four node addresses never
+lost access at all.
+
+For anything long-running:
 
 - Discover all node addresses via `GET /rest/v1/Node` (the `lanIP` field)
-- Implement client-side failover across the node list
+- Implement client-side failover across the node list, **with retry** — healthy
+  peers were ~97–98% available during an upgrade, not 100%
+- **A hostname is one node, not the cluster.** Don't treat a DNS name as an
+  address for "the cluster"; it resolves to a single node and dies with it
 - Don't rely on DNS round-robin alone — most HTTP stacks pick one resolved
   IP per connection and won't automatically retry siblings
+
+⚠ **Do not use `networkStatus` to decide whether a node's API is usable.**
+`GET /rest/v1/Node` filtered on `networkStatus == "ONLINE"` is the obvious way
+to build an endpoint list, and it is wrong: during an update, all peers
+reported the node being updated as `ONLINE` with `currentDisposition: IN`
+while that node's API was completely unreachable. It answered ICMP too. Those
+fields describe **cluster membership** — backplane and storage health — not API
+reachability, and they are correct to do so. **The only test of an endpoint is
+a request to it.**
 
 ---
 
