@@ -264,9 +264,17 @@ off it.
 
 It looks like the right answer — there is a first-class
 `condition.updateInProgress` flag, and it was `true` throughout the prepare
-phase. But `Condition` is a REST endpoint, so it stops answering during apply
-along with the rest of the API, exactly when you need it. `update_status.json`
-is the only channel that survives the whole update.
+phase. It fails you at both ends:
+
+- **It stops answering during apply**, along with the rest of the API, exactly
+  when you need it.
+- **It lags on the way out.** The flag was still `true` about 17 seconds after
+  `masterState` had already gone `COMPLETE`, and cleared roughly half a minute
+  after that. So a client gating writes on it would keep refusing to write after
+  the update was already finished.
+
+`update_status.json` is the only channel that survives the whole update and
+tracks it accurately at both edges.
 
 If you read `Condition` for other reasons, note that it returns the **full
 catalogue of every possible condition on every call** — over 250 entries — each

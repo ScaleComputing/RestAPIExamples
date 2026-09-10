@@ -106,8 +106,10 @@ the 404 and the 502 both return HTML — `r.json()` raises rather than failing
 closed. `masterState` also has *two* in-progress values, so test
 `!= "COMPLETE"` rather than matching a name.
 
-`/rest/v1/Condition` has a tempting `condition.updateInProgress` flag, but it is
-a REST endpoint and dies with the rest of the API mid-update — don't rely on it.
+`/rest/v1/Condition` has a tempting `condition.updateInProgress` flag, but it
+fails at both ends: the endpoint dies with the rest of the API mid-update, and
+the flag also *lags* on the way out (measured still `true` ~17 s after
+`masterState` went `COMPLETE`). Don't rely on it.
 `POST /rest/v1/Update/{uuid}/apply` returns 200 with an **empty** `taskTag`, so
 there is no task to wait on (see Rule 1).
 
