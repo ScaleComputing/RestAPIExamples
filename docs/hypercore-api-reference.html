@@ -412,7 +412,7 @@
         </div>
         <div class="rule">
           <div class="rule-head"><span class="num">5</span><h3>Check for an in-progress update first</h3></div>
-          <p>While SC//HyperCore software self-updates, the API is effectively read-only. Before a batch of writes, check <code>GET /update/update_status.json</code> (no auth, <b>not</b> under <code>/rest/v1/</code>) — idle when <code>updateStage</code> is <code>COMPLETE</code> or empty.</p>
+          <p>While SC//HyperCore software self-updates, the API is effectively read-only. Before a batch of writes, check <code>GET /update/update_status.json</code> (no auth, <b>not</b> under <code>/rest/v1/</code>). The cluster is idle only when <b>both</b> <code>prepareStatus.state</code> and <code>updateStatus.masterState</code> are <code>COMPLETE</code> — there is no top-level <code>updateStage</code> field. Fail closed: treat any other value, a missing field, or an unreachable node as <b>busy</b>, since nodes reboot mid-update and a cluster that has never updated may not serve the file at all.</p>
         </div>
         <div class="rule">
           <div class="rule-head"><span class="num">6</span><h3>There is no cluster VIP</h3></div>

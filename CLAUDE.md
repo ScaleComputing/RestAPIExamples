@@ -73,7 +73,12 @@ instead of disabling verification.
 While SC//HyperCore software is self-updating, the REST API is effectively read-only and
 mutating calls fail. Before a batch of writes, check
 `GET https://<node-ip>/update/update_status.json` (note: **not** under
-`/rest/v1/`; no auth required) — idle when `updateStage` is `"COMPLETE"` or empty.
+`/rest/v1/`; no auth required). The cluster is idle only when **both**
+`prepareStatus.state` and `updateStatus.masterState` are `"COMPLETE"`. Treat any
+other value, a missing field, an unparseable body, or an unreachable node as
+**busy** — this check must fail closed, since nodes reboot during an update and
+the file may not exist yet on a cluster that has never updated. Working
+implementation: `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`.
 
 ### 6. There is no cluster VIP
 

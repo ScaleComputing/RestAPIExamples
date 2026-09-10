@@ -125,8 +125,40 @@ mutating calls fail. Before any batch of writes, check:
 GET https://<node-ip>/update/update_status.json
 ```
 
-Note this is **not** under `/rest/v1/` and requires no auth. The cluster is
-idle when `updateStage` is `"COMPLETE"` or empty.
+Note this is **not** under `/rest/v1/` and requires no auth. The response is
+shaped like this (verified on 9.8.3 and 9.8.4):
+
+```json
+{
+  "prepareStatus": { "state": "COMPLETE" },
+  "updateStatus": {
+    "masterState": "COMPLETE",
+    "fromBuild": "227336",
+    "toBuild": "227597",
+    "toVersion": "9.8.4.227597",
+    "percent": "100",
+    "status": { "statusdetails": "Update Complete. Press 'Reload' to reconnect" }
+  }
+}
+```
+
+The cluster is idle only when **both** `prepareStatus.state` and
+`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
+`updateStage` field.
+
+**Fail closed.** Treat every one of these as *busy*, not idle:
+
+- either state present and not `"COMPLETE"`
+- either field absent (a cluster that has never updated may have no
+  `update_status.json` at all, and `.get()` returning `None` must not read as
+  "idle")
+- a non-JSON body or an HTTP error
+- the node unreachable — nodes reboot during an update, so a connection
+  failure is a likely *symptom* of one
+
+Because a mid-update node can be down, check the file on more than one node
+before concluding the cluster is idle. `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`
+implements this pattern, including node failover.
 
 ### 6. No cluster VIP — plan for node failover
 
