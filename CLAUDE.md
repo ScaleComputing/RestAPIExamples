@@ -91,11 +91,20 @@ through a whole phase of a real update:
 | apply | `COMPLETE` | `EXECUTING` ⇄ `IN PROGRESS` |
 | settled | `COMPLETE` | `COMPLETE` |
 
-**Fail closed.** Treat any other value, a missing field, a 404, an unparseable
-body, a timeout, or an unreachable node as **busy**. Two traps in particular:
-a cluster that has never updated returns **404 with an HTML body**, so
-`.json()` raises rather than giving you an empty object; and `masterState` has
-*two* in-progress values, so test `!= "COMPLETE"` rather than matching a name.
+**Fail closed.** Treat any other value, a missing field, a 404, a 502, an
+unparseable body, a timeout, a TLS failure, or an unreachable node as **busy**.
+
+⚠ **"Unreachable" is at least four different things.** One update produced all
+of these, and none was a refused connection: **404 + HTML** (never updated),
+**read timeout** (apply phase — connection accepted, backend silent), **TLS
+error** then **read timeout** (node tearing down, then fully down — ~2m20s
+total), and **502 + HTML** (back up, backend still starting). So: catching only
+`Timeout` is a bug — `requests.exceptions.SSLError` subclasses
+`ConnectionError`, not `Timeout`, so the reboot escapes it (in `curl` that
+moment is exit 35, not 7). And check the status code *before* parsing, because
+the 404 and the 502 both return HTML — `r.json()` raises rather than failing
+closed. `masterState` also has *two* in-progress values, so test
+`!= "COMPLETE"` rather than matching a name.
 
 `/rest/v1/Condition` has a tempting `condition.updateInProgress` flag, but it is
 a REST endpoint and dies with the rest of the API mid-update — don't rely on it.

@@ -202,15 +202,51 @@ Once an update is triggered the file appears within a few seconds, so the
 window in which a genuinely updating cluster still returns 404 is short — but a
 correct check must still treat 404 as *unknown*, not as *idle*.
 
+#### "Unreachable" is at least four different things
+
+This is the single most important practical finding, and the reason the rule
+below is written the way it is. Across one update the same client hitting the
+same cluster saw **four distinct failure shapes**, and *none of them was a
+refused connection*:
+
+| when | `/update/update_status.json` | `/rest/v1/*` |
+|---|---|---|
+| never updated | **HTTP 404**, HTML body | 404 |
+| apply, backend busy | 200 throughout | **read timeout** (accepted, never answered) |
+| node tearing down to reboot | **TLS error** (~100 s) | TLS error |
+| node fully down | **read timeout** (~35 s) | read timeout |
+| just back, backend still starting | 200 | **HTTP 502**, HTML body |
+
+The reboot alone moved through *two* shapes in sequence — TLS error, then read
+timeout — and took roughly 2m20s end to end before the file answered again.
+
+Three consequences for real client code:
+
+- **Catching only timeouts is not enough.** In `requests`, the reboot raises
+  `SSLError`, which subclasses `ConnectionError` and **not** `Timeout` — so
+  `except requests.exceptions.Timeout` lets it through and the caller crashes
+  during the reboot. Catch `RequestException`, or at minimum both
+  `ConnectionError` and `Timeout`. With `curl`, the same moment is exit code
+  **35** (SSL connect error), not 7 (couldn't connect); once the host is fully
+  down it becomes exit **28** (timeout).
+- **Check the status code before parsing.** Both the 404 and the 502 return
+  **HTML**, so `response.json()` raises a decode error rather than giving you
+  something to inspect. Code shaped like `r.json().get("prepareStatus", {})`
+  throws instead of failing closed.
+- **A 502 means "ask again later", never "idle".** It appears in the window
+  where the front-end web server is up but the REST backend has not finished
+  starting — a genuinely mid-update state that a naive check reads as an error
+  it can ignore.
+
 #### Fail closed
 
 Treat every one of these as **busy**, not idle:
 
 - either state present and not `"COMPLETE"`
 - either field absent — `.get()` returning `None` must never read as "idle"
-- a 404, a non-JSON body, or any HTTP error
-- the request timing out, or the node otherwise unreachable — nodes reboot
-  during an update, so a hang or connection failure is a likely *symptom* of the
+- a 404, a 502, a non-JSON body, or any other HTTP error
+- the request timing out, failing TLS, or the node otherwise unreachable —
+  nodes reboot during an update, so any of these is a likely *symptom* of the
   very thing you are checking for
 
 Because a mid-update node can be down or hanging, check the file on more than
