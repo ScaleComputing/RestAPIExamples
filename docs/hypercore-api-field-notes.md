@@ -118,15 +118,62 @@ bundle, which gets you real verification without a CA-signed cert.
 
 ### 5. Cluster update awareness
 
-While SC//HyperCore software is self-updating, the REST API is effectively read-only —
-mutating calls fail. Before any batch of writes, check:
+While SC//HyperCore software is self-updating, **the REST API is not merely
+read-only — it becomes entirely unavailable, and it fails by hanging.**
+
+The findings below were measured end to end across a real update on a
+single-node cluster going from 9.8.3 to 9.8.4, sampling every 5 seconds from
+before the update started until it settled.
+
+#### Use `update_status.json`, not `/rest/v1/`
 
 ```
 GET https://<node-ip>/update/update_status.json
 ```
 
-Note this is **not** under `/rest/v1/` and requires no auth. The response is
-shaped like this (verified on 9.8.3 and 9.8.4):
+Not under `/rest/v1/`, and needs no auth. During the apply phase this file kept
+returning 200 continuously while **every** `/rest/v1/` endpoint tried
+(`Cluster`, `Node`, `Drive`, `Condition`, `VirDomain`, `Update`) returned a
+**read timeout** for minutes at a stretch. The file is served as a static file
+by the front-end web server, independently of the REST backend — which is why it
+is the progress channel and no REST endpoint is.
+
+⚠ **Set an explicit read timeout on every call.** The observed failure was a
+*hang*, not a refusal and not a `503`: the TCP connection is accepted and the
+backend never answers. A client with no read timeout blocks indefinitely instead
+of getting an error it can handle. In `requests` that means
+`timeout=(connect, read)` — a bare number sets only the connect timeout in some
+client libraries, and no timeout at all is never correct here.
+
+#### The state machine, and why you must check *both* fields
+
+| phase | `prepareStatus.state` | `updateStatus.masterState` |
+|---|---|---|
+| never updated | *(HTTP 404 — an HTML error page, not JSON)* | *(404)* |
+| prepare | `DOWNLOAD BUNDLE` → `DOWNLOAD RPMS` → `UPDATE RPM` | **key absent entirely** |
+| apply | `COMPLETE` | `EXECUTING` ⇄ `IN PROGRESS`, `percent` climbing |
+| settled | `COMPLETE` | `COMPLETE` |
+
+The cluster is idle only when **both** `prepareStatus.state` and
+`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
+`updateStage` field in any phase.
+
+**Checking only one of the two fields fails open for an entire phase of the
+update:**
+
+- During **prepare**, `updateStatus` contains only `percent` and `status`.
+  `masterState` does not exist, so `.get("masterState")` returns `None` — which
+  is falsy, and a `masterState`-only check reports the cluster *idle* while it
+  is downloading and installing packages.
+- During **apply**, `prepareStatus.state` has already returned to `"COMPLETE"`.
+  A `prepareStatus`-only check reports the cluster *idle* while the update is
+  halfway through.
+- `masterState` alternates between **two** in-progress values, `"EXECUTING"` and
+  `"IN PROGRESS"`. Test `!= "COMPLETE"`; never match against a specific
+  in-progress name.
+
+A settled response looks like this — note that `masterState`, `toVersion` and
+`fromBuild` appear only once the apply phase has begun:
 
 ```json
 {
@@ -142,23 +189,78 @@ shaped like this (verified on 9.8.3 and 9.8.4):
 }
 ```
 
-The cluster is idle only when **both** `prepareStatus.state` and
-`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
-`updateStage` field.
+#### A cluster that has never updated returns 404, not empty JSON
 
-**Fail closed.** Treat every one of these as *busy*, not idle:
+The file does not exist until the cluster's first update, and the web server
+answers with **HTTP 404 and an HTML error body**. So `response.json()` raises a
+JSON decode error — there is no "empty JSON" case to handle, and code that
+parses before checking the status code will throw. This was observed on three
+never-updated clusters running three different builds (9.6.32, 9.7.8 and
+9.8.3), so it tracks *never having updated*, not the software version.
+
+Once an update is triggered the file appears within a few seconds, so the
+window in which a genuinely updating cluster still returns 404 is short — but a
+correct check must still treat 404 as *unknown*, not as *idle*.
+
+#### Fail closed
+
+Treat every one of these as **busy**, not idle:
 
 - either state present and not `"COMPLETE"`
-- either field absent (a cluster that has never updated may have no
-  `update_status.json` at all, and `.get()` returning `None` must not read as
-  "idle")
-- a non-JSON body or an HTTP error
-- the node unreachable — nodes reboot during an update, so a connection
-  failure is a likely *symptom* of one
+- either field absent — `.get()` returning `None` must never read as "idle"
+- a 404, a non-JSON body, or any HTTP error
+- the request timing out, or the node otherwise unreachable — nodes reboot
+  during an update, so a hang or connection failure is a likely *symptom* of the
+  very thing you are checking for
 
-Because a mid-update node can be down, check the file on more than one node
-before concluding the cluster is idle. `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`
-implements this pattern, including node failover.
+Because a mid-update node can be down or hanging, check the file on more than
+one node before concluding the cluster is idle.
+
+#### Progress: use `percent`, not the status text
+
+`percent` and `currentComponent` advanced monotonically across the whole run
+(no decreases in any sample). The human-readable `status.statusdetails` is for
+display only — it is not a progress indicator, and at least one placeholder
+value (`"No-op"`) recurs at several different percentages. Don't drive logic
+off it.
+
+#### Don't use `/rest/v1/Condition` to detect an update
+
+It looks like the right answer — there is a first-class
+`condition.updateInProgress` flag, and it was `true` throughout the prepare
+phase. But `Condition` is a REST endpoint, so it stops answering during apply
+along with the rest of the API, exactly when you need it. `update_status.json`
+is the only channel that survives the whole update.
+
+If you read `Condition` for other reasons, note that it returns the **full
+catalogue of every possible condition on every call** — over 250 entries — each
+with a boolean `value`. Presence in the list carries no information; filter on
+`value` being true. Only a handful are typically active.
+
+#### Applying an update returns no task tag
+
+`POST /rest/v1/Update/{uuid}/apply` returns **HTTP 200 with an empty task
+tag**: `{"taskTag": "", "createdUUID": ""}`. There is no task to poll, so the
+usual "wait for the task tag" rule does not apply — `update_status.json` is the
+only way to follow progress. The standard `if task_tag:` guard handles this
+correctly because `""` is falsy, but don't block waiting for a tag that will
+never arrive. `{uuid}` is the version string exactly as `GET /rest/v1/Update`
+returns it, e.g. `9.8.4.227597`.
+
+#### Reference implementation, with one caveat
+
+`specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py` implements this
+check with node failover, and reads the correct two fields. Two things in it are
+worth understanding before you copy it:
+
+- Its guards are written as `if state and state != "COMPLETE"`, so an **absent**
+  field is falsy and reads as idle. It is nonetheless correct across the
+  sequence above, because at every point at least one of the two fields is
+  present and not `"COMPLETE"` — but the pattern is not safe on its own.
+- When *every* node fails the check it concludes no update is running, which is
+  right for a never-updated cluster but cannot distinguish that from every node
+  being unreachable mid-update. If you need that distinction, treat
+  all-nodes-unreachable as busy.
 
 ### 6. No cluster VIP — plan for node failover
 

@@ -412,7 +412,19 @@
         </div>
         <div class="rule">
           <div class="rule-head"><span class="num">5</span><h3>Check for an in-progress update first</h3></div>
-          <p>While SC//HyperCore software self-updates, the API is effectively read-only. Before a batch of writes, check <code>GET /update/update_status.json</code> (no auth, <b>not</b> under <code>/rest/v1/</code>). The cluster is idle only when <b>both</b> <code>prepareStatus.state</code> and <code>updateStatus.masterState</code> are <code>COMPLETE</code> — there is no top-level <code>updateStage</code> field. Fail closed: treat any other value, a missing field, or an unreachable node as <b>busy</b>, since nodes reboot mid-update and a cluster that has never updated may not serve the file at all.</p>
+          <p>While SC//HyperCore software self-updates the API does not merely go read-only — it <b>stops answering entirely, by hanging</b>. Measured across a real 9.8.3&nbsp;→&nbsp;9.8.4 update: every <code>/rest/v1/</code> endpoint returned a <b>read timeout</b> for minutes (connection accepted, no response — not a refusal, not a <code>503</code>), while <code>GET /update/update_status.json</code> kept returning 200 throughout. <b>Always set an explicit read timeout</b>, and use that file — no auth, <b>not</b> under <code>/rest/v1/</code> — to decide whether it is safe to write.</p>
+          <p>The cluster is idle only when <b>both</b> <code>prepareStatus.state</code> and <code>updateStatus.masterState</code> are <code>COMPLETE</code>; there is no top-level <code>updateStage</code>. Both are required, because each one alone reports “idle” through a whole phase of a real update:</p>
+          <div class="scroll-x"><table class="traps">
+            <thead><tr><th>Phase</th><th>prepareStatus.state</th><th>updateStatus.masterState</th></tr></thead>
+            <tbody>
+              <tr><td>never updated</td><td><em>HTTP 404, HTML body</em></td><td><em>404</em></td></tr>
+              <tr><td>prepare</td><td><code>DOWNLOAD BUNDLE</code> → <code>DOWNLOAD RPMS</code> → <code>UPDATE RPM</code></td><td><b>key absent entirely</b></td></tr>
+              <tr><td>apply</td><td><code>COMPLETE</code></td><td><code>EXECUTING</code> ⇄ <code>IN PROGRESS</code></td></tr>
+              <tr><td>settled</td><td><code>COMPLETE</code></td><td><code>COMPLETE</code></td></tr>
+            </tbody>
+          </table></div>
+          <p><b>Fail closed:</b> treat any other value, a missing field, a 404, an unparseable body, a timeout, or an unreachable node as <b>busy</b>. Two specific traps: a cluster that has <b>never updated returns 404 with an HTML body</b>, so <code>.json()</code> raises rather than handing you an empty object; and <code>masterState</code> has <b>two</b> in-progress values, so test <code>!= "COMPLETE"</code> instead of matching a name. Drive progress off <code>percent</code>/<code>currentComponent</code>, which advance monotonically — not off <code>statusdetails</code>, which is display text and repeats.</p>
+          <p><code>/rest/v1/Condition</code> offers a tempting <code>condition.updateInProgress</code> flag, but it is a REST endpoint and dies with the rest of the API mid-update. And <code>POST /rest/v1/Update/{uuid}/apply</code> returns 200 with an <b>empty</b> <code>taskTag</code>, so there is no task to wait on (Rule&nbsp;1). Full detail in <span class="mono">docs/hypercore-api-field-notes.md</span>.</p>
         </div>
         <div class="rule">
           <div class="rule-head"><span class="num">6</span><h3>There is no cluster VIP</h3></div>

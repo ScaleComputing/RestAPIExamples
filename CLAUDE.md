@@ -70,15 +70,43 @@ instead of disabling verification.
 
 ### 5. Check for an in-progress cluster update before writing
 
-While SC//HyperCore software is self-updating, the REST API is effectively read-only and
-mutating calls fail. Before a batch of writes, check
-`GET https://<node-ip>/update/update_status.json` (note: **not** under
-`/rest/v1/`; no auth required). The cluster is idle only when **both**
-`prepareStatus.state` and `updateStatus.masterState` are `"COMPLETE"`. Treat any
-other value, a missing field, an unparseable body, or an unreachable node as
-**busy** — this check must fail closed, since nodes reboot during an update and
-the file may not exist yet on a cluster that has never updated. Working
-implementation: `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`.
+While SC//HyperCore software is self-updating the REST API does not just go
+read-only — it stops answering entirely, **by hanging**. Measured on a real
+9.8.3 → 9.8.4 update: every `/rest/v1/` endpoint returned a read timeout for
+minutes (connection accepted, no response — not a refusal, not a `503`), while
+`GET https://<node-ip>/update/update_status.json` kept returning 200 the whole
+time. So **always set an explicit read timeout**, and use that file — not any
+REST endpoint — to decide whether it is safe to write. It is not under
+`/rest/v1/` and needs no auth.
+
+The cluster is idle only when **both** `prepareStatus.state` and
+`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
+`updateStage`. You must check both, because each one alone reports "idle"
+through a whole phase of a real update:
+
+| phase | `prepareStatus.state` | `updateStatus.masterState` |
+|---|---|---|
+| never updated | *(HTTP 404, HTML body)* | *(404)* |
+| prepare | `DOWNLOAD BUNDLE` → `DOWNLOAD RPMS` → `UPDATE RPM` | **absent** |
+| apply | `COMPLETE` | `EXECUTING` ⇄ `IN PROGRESS` |
+| settled | `COMPLETE` | `COMPLETE` |
+
+**Fail closed.** Treat any other value, a missing field, a 404, an unparseable
+body, a timeout, or an unreachable node as **busy**. Two traps in particular:
+a cluster that has never updated returns **404 with an HTML body**, so
+`.json()` raises rather than giving you an empty object; and `masterState` has
+*two* in-progress values, so test `!= "COMPLETE"` rather than matching a name.
+
+`/rest/v1/Condition` has a tempting `condition.updateInProgress` flag, but it is
+a REST endpoint and dies with the rest of the API mid-update — don't rely on it.
+`POST /rest/v1/Update/{uuid}/apply` returns 200 with an **empty** `taskTag`, so
+there is no task to wait on (see Rule 1).
+
+Reference implementation: `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`
+— correct across the sequence above and does node failover, but its
+`if state and state != "COMPLETE"` guards read an absent field as idle, so
+don't lift that pattern on its own. Full detail:
+`docs/hypercore-api-field-notes.md`.
 
 ### 6. There is no cluster VIP
 
