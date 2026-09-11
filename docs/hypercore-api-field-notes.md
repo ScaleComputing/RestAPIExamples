@@ -9,7 +9,10 @@ called out explicitly.
 
 - Base URL: `https://<node-ip>/rest/v1/`
 - Auth: HTTP Basic (a session-cookie login endpoint also exists — see "Auth")
-- TLS: clusters ship with self-signed certificates (see "TLS")
+- TLS: clusters ship with self-signed certificates (see "TLS"), and
+  negotiate **TLS 1.3 only** — a client whose TLS library cannot do 1.3
+  cannot connect at all. See
+  [`client-tls-requirements.md`](client-tls-requirements.md).
 - Live OpenAPI spec: `https://<node-ip>/rest/v1/openapi.json` (Basic Auth)
 - Swagger UI: `https://<node-ip>/rest/v1/docs/` — also linked from the
   Support tab of the SC//HyperCore web UI Control Panel
@@ -809,6 +812,13 @@ cluster log, and revoking one integration doesn't disturb the others.
 ---
 
 ## TLS certificate management
+
+> Certificate trust and TLS *protocol version* are separate problems. If a
+> client cannot connect at all — rather than complaining about an untrusted
+> certificate — see
+> [`client-tls-requirements.md`](client-tls-requirements.md): clusters
+> negotiate TLS 1.3 only, and disabling certificate validation does nothing
+> for a protocol-version failure.
 
 `POST /Certificate` with `{"certificate": "<PEM>", "privateKey": "<PEM>"}`
 (field is `privateKey`, camelCase).
