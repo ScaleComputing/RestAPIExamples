@@ -70,22 +70,90 @@ instead of disabling verification.
 
 ### 5. Check for an in-progress cluster update before writing
 
-While SC//HyperCore software is self-updating, the REST API is effectively read-only and
-mutating calls fail. Before a batch of writes, check
-`GET https://<node-ip>/update/update_status.json` (note: **not** under
-`/rest/v1/`; no auth required). The cluster is idle only when **both**
-`prepareStatus.state` and `updateStatus.masterState` are `"COMPLETE"`. Treat any
-other value, a missing field, an unparseable body, or an unreachable node as
-**busy** — this check must fail closed, since nodes reboot during an update and
-the file may not exist yet on a cluster that has never updated. Working
-implementation: `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`.
+While SC//HyperCore software is self-updating, **the updating node's** REST API
+does not just go read-only — it stops answering entirely, **by hanging**.
+Measured on real updates (single-node 9.8.3 → 9.8.4; 4-node 9.6.30 → 9.6.32):
+every `/rest/v1/` endpoint on that node returned a read timeout for minutes
+(connection accepted, no response — not a refusal, not a `503`). So **always
+set an explicit read timeout**, and use
+`GET https://<node-ip>/update/update_status.json` — not any REST endpoint — to
+decide whether it is safe to write. It is not under `/rest/v1/` and needs no
+auth. (It is *more* available than REST, not guaranteed: it goes away when its
+own node reboots.)
+
+**On multi-node it is a ROLLING outage — one node at a time, ~8–10 min each,
+peers serving normally** (measured 314 sample rounds with a healthy peer vs 2
+with none). So **multi-endpoint failover plus retry is what makes an update
+survivable** — see Rule 6, which is really the same problem. A 4-node upgrade
+took 3.5 h; the single-node one 30 min.
+
+The cluster is idle only when **both** `prepareStatus.state` and
+`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
+`updateStage`. You must check both, because each one alone reports "idle"
+through a whole phase of a real update:
+
+| phase | `prepareStatus.state` | `updateStatus.masterState` |
+|---|---|---|
+| never updated | *(HTTP 404, HTML body)* | *(404)* |
+| prepare | `DOWNLOAD BUNDLE` → `DOWNLOAD RPMS` → `UPDATE RPM` | **absent** |
+| apply | `COMPLETE` | `EXECUTING` ⇄ `IN PROGRESS` |
+| settled | `COMPLETE` | `COMPLETE` |
+
+**Fail closed.** Treat any other value, a missing field, a 404, a 502, an
+unparseable body, a timeout, a TLS failure, or an unreachable node as **busy**.
+
+⚠ **"Unreachable" is at least four different things.** One update produced all
+of these, and none was a refused connection: **404 + HTML** (never updated),
+**read timeout** (apply phase — connection accepted, backend silent), **TLS
+error** then **read timeout** (node tearing down, then fully down — ~2m20s
+total), and **502 + HTML** (back up, backend still starting). So: catching only
+`Timeout` is a bug — `requests.exceptions.SSLError` subclasses
+`ConnectionError`, not `Timeout`, so the reboot escapes it (in `curl` that
+moment is exit 35, not 7). And check the status code *before* parsing, because
+the 404 and the 502 both return HTML — `r.json()` raises rather than failing
+closed. `masterState` also has *two* in-progress values, so test
+`!= "COMPLETE"` rather than matching a name.
+
+`/rest/v1/Condition` has a tempting `condition.updateInProgress` flag, but it
+fails at both ends: the endpoint dies with the rest of the API mid-update, and
+the flag also *lags* on the way out (measured still `true` ~17 s after
+`masterState` went `COMPLETE`). Don't rely on it.
+
+⚠ **`Cluster.icosVersion` is the ANSWERING node's version.** Mid-upgrade the
+same request returns different versions depending on which node serves it, so
+**version-gated feature detection is unreliable during an update** — pin the
+answer for an operation rather than re-reading per call. It flips at that
+node's reboot, so it is a good per-node "done" signal. `updateStatus.status.node`
+names the node currently being worked on (in *backplane* addressing), and
+`update_status.json` itself is cluster-consistent. `percent` is cluster-wide but
+**not** proportional to nodes completed (51% at 1 of 4) — don't scale it for an
+ETA.
+`POST /rest/v1/Update/{uuid}/apply` returns 200 with an **empty** `taskTag`, so
+there is no task to wait on (see Rule 1).
+
+Reference implementation: `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`
+— correct across the sequence above and does node failover, but its
+`if state and state != "COMPLETE"` guards read an absent field as idle, so
+don't lift that pattern on its own. Full detail:
+`docs/hypercore-api-field-notes.md`.
 
 ### 6. There is no cluster VIP
 
 Every API endpoint is a specific node's IP. If that node goes down, that
 endpoint is dead even though the cluster is fine. Discover all node IPs via
 `GET /rest/v1/Node` (`lanIP` field) and implement client-side failover across
-them for anything long-running.
+them, **with retry**, for anything long-running. (The only VIP-shaped field is
+`Node.vips` — empty, and deprecated in the spec.)
+
+**This is the same problem as Rule 5**, and an update is when it bites: a
+client configured with the cluster **hostname** lost access completely during a
+rolling upgrade while 3 of 4 nodes were serving — the hostname resolves to one
+node and dies with it. A client holding all four addresses never lost access.
+
+⚠ **Never build the endpoint list from `networkStatus == "ONLINE"`.** During an
+update every peer reported the updating node as `ONLINE` / `currentDisposition:
+IN` while its API was unreachable (it answered ICMP too). Those fields describe
+cluster membership, not API reachability. **Only a request tests an endpoint.**
 
 ## Most common naming traps (full table in docs/hypercore-api-field-notes.md)
 

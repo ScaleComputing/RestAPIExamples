@@ -118,15 +118,72 @@ bundle, which gets you real verification without a CA-signed cert.
 
 ### 5. Cluster update awareness
 
-While SC//HyperCore software is self-updating, the REST API is effectively read-only —
-mutating calls fail. Before any batch of writes, check:
+While SC//HyperCore software is self-updating, **the REST API on the node
+being updated is not merely read-only — it becomes entirely unavailable, and it
+fails by hanging.**
+
+Measured end to end across two real updates, sampling every ~5 seconds from
+before each update started until it settled: a **single-node** cluster going
+9.8.3 → 9.8.4 (30 minutes), and a **4-node** cluster with running VMs going
+9.6.30 → 9.6.32 (3.5 hours).
+
+⚠ **On a multi-node cluster the outage is per node, and peers keep serving** —
+see "Multi-node: it's a rolling outage" below. That distinction is the
+difference between an unusable API and a usable one, so read both parts before
+designing a client.
+
+#### Use `update_status.json`, not `/rest/v1/`
+
+(Everything in this subsection was measured on the single-node cluster, where
+there is no peer to answer. The multi-node scoping follows further down.)
 
 ```
 GET https://<node-ip>/update/update_status.json
 ```
 
-Note this is **not** under `/rest/v1/` and requires no auth. The response is
-shaped like this (verified on 9.8.3 and 9.8.4):
+Not under `/rest/v1/`, and needs no auth. During the apply phase this file kept
+returning 200 continuously while **every** `/rest/v1/` endpoint tried
+(`Cluster`, `Node`, `Drive`, `Condition`, `VirDomain`, `Update`) returned a
+**read timeout** for minutes at a stretch. The file is served as a static file
+by the front-end web server, independently of the REST backend — which is why it
+is the progress channel and no REST endpoint is.
+
+⚠ **Set an explicit read timeout on every call.** The observed failure was a
+*hang*, not a refusal and not a `503`: the TCP connection is accepted and the
+backend never answers. A client with no read timeout blocks indefinitely instead
+of getting an error it can handle. In `requests` that means
+`timeout=(connect, read)` — a bare number sets only the connect timeout in some
+client libraries, and no timeout at all is never correct here.
+
+#### The state machine, and why you must check *both* fields
+
+| phase | `prepareStatus.state` | `updateStatus.masterState` |
+|---|---|---|
+| never updated | *(HTTP 404 — an HTML error page, not JSON)* | *(404)* |
+| prepare | `DOWNLOAD BUNDLE` → `DOWNLOAD RPMS` → `UPDATE RPM` | **key absent entirely** |
+| apply | `COMPLETE` | `EXECUTING` ⇄ `IN PROGRESS`, `percent` climbing |
+| settled | `COMPLETE` | `COMPLETE` |
+
+The cluster is idle only when **both** `prepareStatus.state` and
+`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
+`updateStage` field in any phase.
+
+**Checking only one of the two fields fails open for an entire phase of the
+update:**
+
+- During **prepare**, `updateStatus` contains only `percent` and `status`.
+  `masterState` does not exist, so `.get("masterState")` returns `None` — which
+  is falsy, and a `masterState`-only check reports the cluster *idle* while it
+  is downloading and installing packages.
+- During **apply**, `prepareStatus.state` has already returned to `"COMPLETE"`.
+  A `prepareStatus`-only check reports the cluster *idle* while the update is
+  halfway through.
+- `masterState` alternates between **two** in-progress values, `"EXECUTING"` and
+  `"IN PROGRESS"`. Test `!= "COMPLETE"`; never match against a specific
+  in-progress name.
+
+A settled response looks like this — note that `masterState`, `toVersion` and
+`fromBuild` appear only once the apply phase has begun:
 
 ```json
 {
@@ -142,35 +199,222 @@ shaped like this (verified on 9.8.3 and 9.8.4):
 }
 ```
 
-The cluster is idle only when **both** `prepareStatus.state` and
-`updateStatus.masterState` are `"COMPLETE"`. There is no top-level
-`updateStage` field.
+#### A cluster that has never updated returns 404, not empty JSON
 
-**Fail closed.** Treat every one of these as *busy*, not idle:
+The file does not exist until the cluster's first update, and the web server
+answers with **HTTP 404 and an HTML error body**. So `response.json()` raises a
+JSON decode error — there is no "empty JSON" case to handle, and code that
+parses before checking the status code will throw. This was observed on three
+never-updated clusters running three different builds (9.6.32, 9.7.8 and
+9.8.3), so it tracks *never having updated*, not the software version.
+
+Once an update is triggered the file appears within a few seconds, so the
+window in which a genuinely updating cluster still returns 404 is short — but a
+correct check must still treat 404 as *unknown*, not as *idle*.
+
+#### "Unreachable" is at least four different things
+
+This is the single most important practical finding, and the reason the rule
+below is written the way it is. Across one update the same client hitting the
+same cluster saw **four distinct failure shapes**, and *none of them was a
+refused connection*:
+
+| when | `/update/update_status.json` | `/rest/v1/*` |
+|---|---|---|
+| never updated | **HTTP 404**, HTML body | 404 |
+| apply, backend busy | 200 throughout | **read timeout** (accepted, never answered) |
+| node tearing down to reboot | **TLS error** (~100 s) | TLS error |
+| node fully down | **read timeout** (~35 s) | read timeout |
+| just back, backend still starting | 200 | **HTTP 502**, HTML body |
+
+The reboot alone moved through *two* shapes in sequence — TLS error, then read
+timeout — and took roughly 2m20s end to end before the file answered again.
+
+Three consequences for real client code:
+
+- **Catching only timeouts is not enough.** In `requests`, the reboot raises
+  `SSLError`, which subclasses `ConnectionError` and **not** `Timeout` — so
+  `except requests.exceptions.Timeout` lets it through and the caller crashes
+  during the reboot. Catch `RequestException`, or at minimum both
+  `ConnectionError` and `Timeout`. With `curl`, the same moment is exit code
+  **35** (SSL connect error), not 7 (couldn't connect); once the host is fully
+  down it becomes exit **28** (timeout).
+- **Check the status code before parsing.** Both the 404 and the 502 return
+  **HTML**, so `response.json()` raises a decode error rather than giving you
+  something to inspect. Code shaped like `r.json().get("prepareStatus", {})`
+  throws instead of failing closed.
+- **A 502 means "ask again later", never "idle".** It appears in the window
+  where the front-end web server is up but the REST backend has not finished
+  starting — a genuinely mid-update state that a naive check reads as an error
+  it can ignore.
+
+#### Multi-node: it's a rolling outage, and failover is most of the answer
+
+On the 4-node cluster, while the node being updated was unreachable, **its
+peers served both channels normally**. Measured across the whole upgrade:
+
+- **314 sample rounds** had a healthy peer while another node was down.
+- **2 sample rounds** had every node unreachable at once (one ~19-second
+  window, during the first VM evacuation, before any node had rebooted; it did
+  not recur).
+- All four nodes followed the identical pattern, one at a time, with reboot
+  outages of **7.5–10 minutes each**.
+- Nodes on the new version served happily alongside nodes still on the old one.
+
+So the guidance is two-part, and neither half substitutes for the other:
+
+1. **Multi-endpoint failover** handles the per-node reboots, which dominate an
+   upgrade's wall clock. A client holding every node's address never lost
+   access across the entire 3.5-hour upgrade.
+2. **Retry with backoff** handles the rest — the brief all-node window, where
+   no other endpoint would have helped, and ordinary flakiness: peers not being
+   updated still returned scattered timeouts, roughly **97–98% availability**
+   rather than 100%. A single failed call to a healthy peer is expected.
+
+⚠ **A single hostname is not a cluster address — it is one node.** The
+cluster's DNS name failed and recovered in *exactly* the same sample rounds as
+one specific node IP, with identical outage durations, in all three of that
+node's outages. **A client configured with one hostname lost the cluster
+entirely while three of four nodes were healthy and serving.** Configure the
+node addresses, not a name. See Rule 6.
+
+#### Timing, and what `percent` does and doesn't mean
+
+- The 4-node upgrade took **3.5 hours**; the empty single-node one took **30
+  minutes**. Most of the difference is VM migration — evacuating and restoring
+  a node's VMs took ~15 minutes *per node*, on top of a ~10-minute reboot.
+- `totalComponents` scales with cluster size (688 for four nodes, 180 for one).
+- ⚠ **`percent` is cluster-wide but NOT proportional to nodes completed** — it
+  read 51% with only one of four nodes upgraded, because the shared prepare and
+  pre-flight phases account for a large share. Don't scale it into an ETA.
+- Multi-node prepare has two extra states: `BEGIN` → `DOWNLOAD BUNDLE` →
+  `DOWNLOAD RPMS` → **`SYNC NODES`** → `UPDATE RPM` → `COMPLETE`.
+
+#### Which node is being updated, and which are done
+
+- **`updateStatus.status.node` names the node currently being worked on** — but
+  in *backplane* addressing, not the LAN address you connect to. It's the clean
+  signal for following the rollout.
+- **`update_status.json` is cluster-consistent**: every node reports identical
+  `prepareStatus`, `masterState` and `percent`. Nodes do not disagree about
+  update progress.
+- **But `Cluster.icosVersion` is the ANSWERING node's version, not the
+  cluster's.** Mid-upgrade, the same request returns different versions
+  depending on which node serves it — a 2/2 split was observed directly. It
+  flips at that node's upgrade reboot, so it *is* a reliable per-node "this one
+  is done" signal — and simultaneously a trap:
+
+⚠ **Version-gated feature detection is unreliable during an upgrade.** For the
+hours an upgrade runs, a client asking "what version is this cluster?" gets an
+answer that depends on which node answered, and that can change on retry. If
+you gate behaviour on version, pin the answer for the operation rather than
+re-reading it per call. (`Node.activeVersion` is `0` and is not a version
+source.)
+
+#### Fail closed
+
+Treat every one of these as **busy**, not idle:
 
 - either state present and not `"COMPLETE"`
-- either field absent (a cluster that has never updated may have no
-  `update_status.json` at all, and `.get()` returning `None` must not read as
-  "idle")
-- a non-JSON body or an HTTP error
-- the node unreachable — nodes reboot during an update, so a connection
-  failure is a likely *symptom* of one
+- either field absent — `.get()` returning `None` must never read as "idle"
+- a 404, a 502, a non-JSON body, or any other HTTP error
+- the request timing out, failing TLS, or the node otherwise unreachable —
+  nodes reboot during an update, so any of these is a likely *symptom* of the
+  very thing you are checking for
 
-Because a mid-update node can be down, check the file on more than one node
-before concluding the cluster is idle. `specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py`
-implements this pattern, including node failover.
+Because a mid-update node can be down or hanging, check the file on more than
+one node before concluding the cluster is idle.
+
+#### Progress: use `percent`, not the status text
+
+`percent` and `currentComponent` advanced monotonically across the whole run
+(no decreases in any sample). The human-readable `status.statusdetails` is for
+display only — it is not a progress indicator, and at least one placeholder
+value (`"No-op"`) recurs at several different percentages. Don't drive logic
+off it.
+
+#### Don't use `/rest/v1/Condition` to detect an update
+
+It looks like the right answer — there is a first-class
+`condition.updateInProgress` flag, and it was `true` throughout the prepare
+phase. It fails you at both ends:
+
+- **It stops answering during apply**, along with the rest of the API, exactly
+  when you need it.
+- **It lags on the way out.** The flag was still `true` about 17 seconds after
+  `masterState` had already gone `COMPLETE`, and cleared roughly half a minute
+  after that. So a client gating writes on it would keep refusing to write after
+  the update was already finished.
+
+`update_status.json` is the channel that tracks the update accurately at both
+edges. ⚠ It is **not** guaranteed, though: it disappears when its own node
+reboots, and on the 4-node run one ~19-second window had it timing out on
+every node at once. Treat it as *more available* than any `/rest/v1/`
+endpoint, never as always-up.
+
+If you read `Condition` for other reasons, note that it returns the **full
+catalogue of every possible condition on every call** — over 250 entries — each
+with a boolean `value`. Presence in the list carries no information; filter on
+`value` being true. Only a handful are typically active.
+
+#### Applying an update returns no task tag
+
+`POST /rest/v1/Update/{uuid}/apply` returns **HTTP 200 with an empty task
+tag**: `{"taskTag": "", "createdUUID": ""}`. There is no task to poll, so the
+usual "wait for the task tag" rule does not apply — `update_status.json` is the
+only way to follow progress. The standard `if task_tag:` guard handles this
+correctly because `""` is falsy, but don't block waiting for a tag that will
+never arrive. `{uuid}` is the version string exactly as `GET /rest/v1/Update`
+returns it, e.g. `9.8.4.227597`.
+
+#### Reference implementation, with one caveat
+
+`specific_task/HyperCoreDynamicBalancer/HyperCore_balancer.py` implements this
+check with node failover, and reads the correct two fields. Two things in it are
+worth understanding before you copy it:
+
+- Its guards are written as `if state and state != "COMPLETE"`, so an **absent**
+  field is falsy and reads as idle. It is nonetheless correct across the
+  sequence above, because at every point at least one of the two fields is
+  present and not `"COMPLETE"` — but the pattern is not safe on its own.
+- When *every* node fails the check it concludes no update is running, which is
+  right for a never-updated cluster but cannot distinguish that from every node
+  being unreachable mid-update. If you need that distinction, treat
+  all-nodes-unreachable as busy.
 
 ### 6. No cluster VIP — plan for node failover
 
 SC//HyperCore clusters do not provide a floating/virtual IP for the REST API.
 Every endpoint is a specific node's address; the same API is served from
 every node, but if the node you configured goes down, that endpoint is dead
-even though the cluster is healthy. For anything long-running:
+even though the cluster is healthy. The only VIP-shaped field in the API is
+`Node.vips`, which is empty and marked deprecated in the spec.
+
+**This and Rule 5 are the same problem.** A rolling software update takes each
+node down in turn for several minutes, so an update is the most likely time a
+single-endpoint client will fail — measured directly: a client configured with
+the cluster's hostname lost access completely during an upgrade while three of
+four nodes were serving, and a client holding all four node addresses never
+lost access at all.
+
+For anything long-running:
 
 - Discover all node addresses via `GET /rest/v1/Node` (the `lanIP` field)
-- Implement client-side failover across the node list
+- Implement client-side failover across the node list, **with retry** — healthy
+  peers were ~97–98% available during an upgrade, not 100%
+- **A hostname is one node, not the cluster.** Don't treat a DNS name as an
+  address for "the cluster"; it resolves to a single node and dies with it
 - Don't rely on DNS round-robin alone — most HTTP stacks pick one resolved
   IP per connection and won't automatically retry siblings
+
+⚠ **Do not use `networkStatus` to decide whether a node's API is usable.**
+`GET /rest/v1/Node` filtered on `networkStatus == "ONLINE"` is the obvious way
+to build an endpoint list, and it is wrong: during an update, all peers
+reported the node being updated as `ONLINE` with `currentDisposition: IN`
+while that node's API was completely unreachable. It answered ICMP too. Those
+fields describe **cluster membership** — backplane and storage health — not API
+reachability, and they are correct to do so. **The only test of an endpoint is
+a request to it.**
 
 ---
 
