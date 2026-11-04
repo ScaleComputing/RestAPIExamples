@@ -74,7 +74,7 @@ Same script with the cap removed connects and reports
 applies to every client equally. What differs between clients is only whether
 their TLS library *has* TLS 1.3.
 
-Clusters measured, all four identical — default `TLSv1.3`, and
+Clusters measured, all identical — default `TLSv1.3`, and
 `tlsv1 alert protocol version` on a TLS 1.2 ClientHello:
 
 | `icosVersion` | default protocol | TLS 1.2 ClientHello |
@@ -83,16 +83,17 @@ Clusters measured, all four identical — default `TLSv1.3`, and
 | 9.7.8 | TLS 1.3 | refused, alert 70 |
 | 9.8.3 | TLS 1.3 | refused, alert 70 |
 | 9.8.4 | TLS 1.3 | refused, alert 70 |
+| 9.8.5 | TLS 1.3 | refused, alert 70 *(re-checked 2026-11-04)* |
 
-No cluster in that range accepted TLS 1.2. Treat TLS 1.3 as a requirement, not
-a preference.
+No cluster checked, from 9.6.32 through the current 9.8.5, accepted TLS 1.2.
+Treat TLS 1.3 as a requirement, not a preference.
 
 ---
 
 ## Which clients can reach a cluster
 
 TLS 1.3 support is a property of the **TLS library**, not of the language or
-the tool. There are three libraries in practice:
+the tool. There are four libraries in practice:
 
 - **OpenSSL** — TLS 1.3 from **1.1.1** onward. Used by Python, Ansible®,
   curl, Ruby, PHP, and .NET *on Linux*.
@@ -108,7 +109,7 @@ the tool. There are three libraries in practice:
 .NET is the awkward one, because it uses a *different* library on each
 platform. That is why PowerShell's answer depends on where you run it:
 
-| Client | TLS library | 1.3 | Reaches a cluster | |
+| Client | TLS library | 1.3 | Reaches a cluster | Basis |
 |---|---|---|---|---|
 | Python (`requests`, `urllib3`) | OpenSSL ≥ 1.1.1 | yes | ✅ | measured on macOS |
 | curl | LibreSSL 3.3.6 | yes | ✅ | measured on macOS |
