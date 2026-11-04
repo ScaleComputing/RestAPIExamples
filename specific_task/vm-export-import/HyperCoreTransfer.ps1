@@ -27,9 +27,12 @@ PLATFORM NOTE
     SC//HyperCore clusters negotiate TLS 1.3 only. .NET on macOS tops out at
     TLS 1.2, so PowerShell on macOS cannot reach a cluster at all -- the
     handshake fails with "bad protocol version" before any credential is sent.
-    Run these on Windows (PowerShell 5.1 or 7+) or on Linux, where .NET does
-    support TLS 1.3. The Python examples alongside these use OpenSSL and work
-    on macOS.
+    Confirmed working: PowerShell 7+ on Linux, and on Windows 11 / Server
+    2022+, where .NET's TLS stack supports 1.3. Windows PowerShell 5.1 has
+    not been confirmed against a cluster on any Windows version we tested --
+    its TLS stack there has no TLS 1.3 regardless of the OS build. See
+    README.md for the full measured table. The Python examples alongside
+    these use OpenSSL and work everywhere, including macOS.
 #>
 
 # PowerShell 7+ takes -SkipCertificateCheck per call. Windows PowerShell 5.1

@@ -23,7 +23,11 @@ Usage
     .\VMExport.ps1 -Node 10.0.0.1 -VMName my-vm `
         -PathURI 'smb://administrator:secret@10.0.0.50/exports/hcexports/my-vm'
 
-Runs on Windows PowerShell 5.1 and PowerShell 7+.
+Clusters negotiate TLS 1.3 only (see README.md). Confirmed working: PowerShell
+7+ on Linux, and on Windows 11 / Server 2022+. Windows PowerShell 5.1 has not
+been confirmed to work against a cluster on any Windows version we tested
+(Server 2016, Server 2019, Windows 10) -- its TLS stack there has no TLS 1.3.
+Does not work on macOS at any PowerShell version.
 
 THIS SCRIPT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND
 feel free to use without attribution in any way as seen fit, at your own risk.
