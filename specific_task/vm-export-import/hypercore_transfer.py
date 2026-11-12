@@ -82,13 +82,19 @@ def build_smb_uri(server, share, path, username, password, domain=None):
 
         smb://DOMAIN;user:password@server/share/path
 
+    The share name and each path segment are URL-encoded too (a share or
+    directory name containing a space or '#' would otherwise corrupt the
+    URI the same way an unencoded password does) -- '/' is kept literal in
+    the path so multi-level directories still work.
+
     Returns (uri, masked_uri). Print the masked one.
     """
     user_part = quote(username, safe="")
     if domain:
         user_part = "{0};{1}".format(quote(domain, safe=""), user_part)
-    path = path.strip("/")
-    tail = "{0}@{1}/{2}/{3}".format("{0}", server, share.strip("/"), path)
+    share = quote(share.strip("/"), safe="")
+    path = quote(path.strip("/"), safe="/")
+    tail = "{0}@{1}/{2}/{3}".format("{0}", server, share, path)
     uri = "smb://" + tail.format("{0}:{1}".format(user_part, quote(password, safe="")))
     masked = "smb://" + tail.format("{0}:{1}".format(user_part, "****"))
     return uri, masked

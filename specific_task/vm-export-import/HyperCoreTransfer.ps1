@@ -265,6 +265,11 @@ function New-ScaleSmbPathUri {
 
             smb://DOMAIN;user:password@server/share/path
 
+        The share name and each path segment are URL-encoded too (a share or
+        directory name containing a space or '#' would otherwise corrupt the
+        URI the same way an unencoded password does) -- '/' is kept literal
+        in the path so multi-level directories still work.
+
         Returns an object with Uri and MaskedUri. Print the masked one -- a
         PowerShell transcript log will otherwise capture the password. #>
     param(
@@ -282,8 +287,13 @@ function New-ScaleSmbPathUri {
     $password = [System.Uri]::EscapeDataString(
         $SmbCredential.GetNetworkCredential().Password)
 
-    $tail = "$Server/$($Share.Trim('/'))"
-    if ($Path) { $tail = "$tail/$($Path.Trim('/'))" }
+    $shareEncoded = [System.Uri]::EscapeDataString($Share.Trim('/'))
+    $tail = "$Server/$shareEncoded"
+    if ($Path) {
+        $pathEncoded = ($Path.Trim('/') -split '/' |
+            ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+        $tail = "$tail/$pathEncoded"
+    }
 
     return [PSCustomObject]@{
         Uri       = "smb://${user}:${password}@$tail"
